@@ -1,7 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
     const reportsContainer = document.getElementById('reports-container');
     const dateRangeSelect = document.getElementById('date-range');
-    const API_URL = 'http://127.0.0.1:5000';
+    // API_URL viene de config.js
 
     const createReportElement = (data) => {
         const fecha = data.fecha || 'Fecha desconocida';

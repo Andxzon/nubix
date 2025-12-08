@@ -187,7 +187,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     generateBtn.addEventListener('click', (e) => {
         e.preventDefault();
-        fetchAndShowReport('http://127.0.0.1:5000/generate-report', { method: 'POST' }, generateBtn);
+        fetchAndShowReport(`${API_URL}/generate-report`, { method: 'POST' }, generateBtn);
     });
 });
 
@@ -230,7 +230,7 @@ function stopNotifications() {
 
 async function sendNotification() {
     try {
-        const response = await fetch('http://127.0.0.1:5000/latest-report');
+        const response = await fetch(`${API_URL}/latest-report`);
         if (!response.ok) {
             throw new Error('No se pudo obtener el informe de hoy.');
         }
