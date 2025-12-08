@@ -11,6 +11,7 @@ import openai
 import paho.mqtt.client as mqtt
 from flask import Flask, jsonify, send_from_directory, send_file
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 from dotenv import load_dotenv
 import schedule
 import mysql.connector
@@ -51,6 +52,7 @@ SENSORS = [
 
 app = Flask(__name__)
 CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # ==================== DATABASE ====================
 
@@ -237,6 +239,16 @@ def on_message(client, userdata, msg):
         if sensor:
             last_values[sensor['label']] = value
             new_data_received = True
+            
+            # Emitir a todos los clientes WebSocket conectados
+            socketio.emit('sensor_data', {
+                'topic': msg.topic,
+                'sensor_id': sensor['id'],
+                'label': sensor['label'],
+                'value': value,
+                'unit': sensor['unit'],
+                'timestamp': int(time.time() * 1000)
+            })
     except ValueError:
         pass
 
@@ -598,6 +610,6 @@ if __name__ == '__main__':
     # Esperar un momento para que se conecte MQTT
     time.sleep(2)
     
-    # Iniciar Flask
-    print("Iniciando servidor Flask en http://0.0.0.0:5000")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # Iniciar Flask con SocketIO
+    print("Iniciando servidor Flask + WebSocket en http://0.0.0.0:5000")
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
