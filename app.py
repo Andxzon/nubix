@@ -9,7 +9,7 @@ from pathlib import Path
 
 import openai
 import paho.mqtt.client as mqtt
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 import schedule
@@ -530,7 +530,23 @@ def run_scheduler():
 
 @app.route('/')
 def index():
-    return jsonify({"status": "ok", "message": "IoT Backend API running"})
+    return send_file('index.html')
+
+@app.route('/report.html')
+def report_page():
+    return send_file('report.html')
+
+@app.route('/css/<path:filename>')
+def serve_css(filename):
+    return send_from_directory('css', filename)
+
+@app.route('/js/<path:filename>')
+def serve_js(filename):
+    return send_from_directory('js', filename)
+
+@app.route('/images/<path:filename>')
+def serve_images(filename):
+    return send_from_directory('images', filename)
 
 @app.route('/generate-report', methods=['POST'])
 def handle_generate_report():
