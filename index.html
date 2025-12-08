@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Estacion Meteorológica</title>
+    <!-- EL MQTT -->
+     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <!-- Chart.js y adaptador de fechas -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script> <!--graficAS-->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script><!--fechas-->
+
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+    <main class="wrap">
+            <header class="header">
+            <h1>Dashboard — Sensores (ventana: 10 min)</h1>
+            <p class="sub">Temperatura · Presión · Humedad · Humedad de suelo · Luz · Vibración</p>
+            <div class="report-actions">
+                <button id="generate-new-report-btn" class="report-button">Generar Nuevo Reporte</button>
+                <a href="report.html" target="_blank" class="report-button">Ver Último Reporte</a>
+                <button id="subscribe-btn" class="report-button">Suscribirse</button>
+            </div>
+            <div id="report-loader" class="loader" style="display: none;"></div>
+            <div id="report-error" class="error-message" style="display: none;"></div>
+            </header>
+
+            <section class="grid-charts">
+            <div class="card"><canvas id="tempChart"></canvas></div>
+            <div class="card"><canvas id="presChart"></canvas></div>
+            <div class="card"><canvas id="humChart"></canvas></div>
+            <div class="card"><canvas id="soilChart"></canvas></div>
+            <div class="card"><canvas id="lightChart"></canvas></div>
+            <div class="card"><canvas id="vibrChart"></canvas></div>
+            </section>
+
+            <footer class="footer">Derechos reservados ©</footer>
+    </main>
+
+<script src="js/config.js"></script>
+<script src="js/script.js"></script>
+</body>
+</html>

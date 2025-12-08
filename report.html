@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Informes de los Últimos 7 Días</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <main class="wrap">
+        <header class="header">
+            <h1>Historial de Informes</h1>
+            <br>
+            <div class="report-actions">
+                <select id="date-range" class="report-button">
+                    <option value="7">Últimos 7 días</option>
+                    <option value="15">Últimos 15 días</option>
+                    <option value="30">Últimos 30 días</option>
+                    <option value="all">Todos</option>
+                </select>
+                <a href="index.html" class="report-button">Volver al Dashboard</a>
+            </div>
+        </header>
+        <section id="reports-container" class="report-content-area">
+            <!-- Los informes se cargarán aquí dinámicamente -->
+        </section>
+        <footer class="footer">Derechos reservados ©</footer>
+    </main>
+    <script src="js/report.js"></script>
+</body>
+</html>
