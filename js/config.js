@@ -6,10 +6,6 @@ const MQTT_CONFIG = {
     protocol: 'wss'
 };
 
-// URL del backend API
-// Cambia esto cuando hostees el backend en producción
-// Ejemplos:
-//   Local: 'http://127.0.0.1:5000'
-//   Producción: 'https://tu-servidor.com/api'
-const API_URL = 'http://127.0.0.1:5000';
+// URL del backend API (vacío = mismo servidor)
+const API_URL = '';
 
