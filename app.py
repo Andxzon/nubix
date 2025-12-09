@@ -13,7 +13,6 @@ from flask import Flask, jsonify, send_from_directory, send_file
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from dotenv import load_dotenv
-import schedule
 import mysql.connector
 from mysql.connector import Error
 
@@ -170,6 +169,27 @@ def clear_old_readings(days: int = 7):
         return True
     except Error as e:
         print(f"Error limpiando lecturas: {e}")
+        return False
+
+def clear_yesterday_readings():
+    """Elimina las lecturas del día anterior (para ejecutar a las 00:00)"""
+    conn = get_connection()
+    if not conn:
+        return False
+    try:
+        cursor = conn.cursor()
+        cursor.execute('''
+            DELETE FROM sensor_readings 
+            WHERE DATE(timestamp) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+        ''')
+        deleted = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print(f"✅ {deleted} lecturas del día anterior eliminadas")
+        return True
+    except Error as e:
+        print(f"Error limpiando lecturas del día anterior: {e}")
         return False
 
 def save_report(report_data: dict):
@@ -529,14 +549,38 @@ def run_report_generation():
 
 # ==================== SCHEDULER ====================
 
+def get_current_time_gmt_minus_5():
+    """Obtiene la hora actual en GMT-5 (América/Bogotá)"""
+    tz = timezone(timedelta(hours=-5))
+    return datetime.now(tz)
+
 def run_scheduler():
-    print("Iniciando el programador de tareas...")
-    schedule.every().day.at("23:30").do(run_report_generation)
-    schedule.every().day.at("00:00").do(clear_old_readings, 7)
+    print("Iniciando el programador de tareas (GMT-5)...")
+    
+    target_report_time = "23:30"
+    target_cleanup_time = "00:00"
+    
+    last_report_date = None
+    last_cleanup_date = None
     
     while True:
-        schedule.run_pending()
-        time.sleep(60)
+        now = get_current_time_gmt_minus_5()
+        current_time = now.strftime("%H:%M")
+        current_date = now.date()
+        
+        # Generar informe a las 23:30
+        if current_time == target_report_time and last_report_date != current_date:
+            print(f"Ejecutando generación de informe programado ({current_time} GMT-5)")
+            run_report_generation()
+            last_report_date = current_date
+        
+        # Limpiar lecturas del día anterior a las 00:00
+        if current_time == target_cleanup_time and last_cleanup_date != current_date:
+            print(f"Ejecutando limpieza de lecturas del día anterior ({current_time} GMT-5)")
+            clear_yesterday_readings()
+            last_cleanup_date = current_date
+        
+        time.sleep(30)
 
 # ==================== FLASK ROUTES ====================
 

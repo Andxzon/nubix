@@ -211,7 +211,7 @@ function toggleSubscription() {
 
 function startNotifications() {
   sendNotification();
-  notificationInterval = setInterval(sendNotification, 10000);
+  notificationInterval = setInterval(sendNotification, 3600000); // 1 hora
 }
 
 function stopNotifications() {
