@@ -181,61 +181,169 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-// ---------------- SUSCRIPCIÓN Y NOTIFICACIONES ----------------
-let notificationInterval;
+// ---------------- SERVICE WORKER Y PUSH NOTIFICATIONS ----------------
 
-function checkSubscriptionStatus() {
-  const subscribeBtn = document.getElementById('subscribe-btn');
-  if (localStorage.getItem('isSubscribed') === 'true') {
-    subscribeBtn.textContent = 'Suscrito';
-    startNotifications();
+let swRegistration = null;
+let pushSubscription = null;
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding)
+    .replace(/-/g, '+')
+    .replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
   }
+  return outputArray;
 }
 
-function toggleSubscription() {
-  const subscribeBtn = document.getElementById('subscribe-btn');
-  if (localStorage.getItem('isSubscribed') === 'true') {
-    localStorage.setItem('isSubscribed', 'false');
-    subscribeBtn.textContent = 'Suscribirse';
-    stopNotifications();
-  } else {
-    Notification.requestPermission().then(permission => {
-      if (permission === 'granted') {
-        localStorage.setItem('isSubscribed', 'true');
-        subscribeBtn.textContent = 'Suscrito';
-        startNotifications();
-      }
-    });
+async function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) {
+    console.warn('Service Worker no soportado');
+    return null;
   }
-}
-
-function startNotifications() {
-  sendNotification();
-  notificationInterval = setInterval(sendNotification, 3600000); // 1 hora
-}
-
-function stopNotifications() {
-  clearInterval(notificationInterval);
-}
-
-async function sendNotification() {
+  
   try {
-    const response = await fetch(`${API_URL}/latest-report`);
-    if (!response.ok) {
-      throw new Error('No se pudo obtener el informe de hoy.');
-    }
-    const report = await response.json();
-    
-    const temp = report.variables?.temperatura?.promedio?.toFixed(1) || 'N/A';
-    const hum = report.variables?.humedad_relativa?.promedio?.toFixed(1) || 'N/A';
-    const summary = (report.resumen_ejecutivo || report.resumen || '').replace(/<br>/g, ' ');
-
-    const notification = new Notification('Reporte Meteorológico', {
-      body: `Temperatura: ${temp}°C, Humedad: ${hum}%. ${summary.substring(0, 100)}...`,
-      icon: 'images/logo_noti.png' 
-    });
+    const registration = await navigator.serviceWorker.register('/sw.js');
+    console.log('✅ Service Worker registrado:', registration.scope);
+    swRegistration = registration;
+    return registration;
   } catch (error) {
-    console.error('Error al enviar la notificación:', error);
+    console.error('Error registrando Service Worker:', error);
+    return null;
+  }
+}
+
+async function checkSubscriptionStatus() {
+  const subscribeBtn = document.getElementById('subscribe-btn');
+  
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    subscribeBtn.textContent = 'No soportado';
+    subscribeBtn.disabled = true;
+    console.warn('Push notifications no soportadas en este navegador');
+    return;
+  }
+  
+  await registerServiceWorker();
+  
+  if (swRegistration) {
+    try {
+      pushSubscription = await swRegistration.pushManager.getSubscription();
+      if (pushSubscription) {
+        subscribeBtn.textContent = 'Suscrito ✓';
+        localStorage.setItem('isSubscribed', 'true');
+      } else {
+        subscribeBtn.textContent = 'Suscribirse';
+        localStorage.setItem('isSubscribed', 'false');
+      }
+    } catch (error) {
+      console.error('Error verificando suscripción:', error);
+    }
+  }
+}
+
+async function subscribeToPush() {
+  if (!swRegistration) {
+    await registerServiceWorker();
+  }
+  
+  if (!swRegistration) {
+    alert('Error: No se pudo registrar el Service Worker');
+    return null;
+  }
+  
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      alert('Debes permitir las notificaciones para suscribirte');
+      return null;
+    }
+    
+    let vapidKey = VAPID_PUBLIC_KEY;
+    if (!vapidKey) {
+      const response = await fetch(`${API_URL}/vapid-public-key`);
+      if (response.ok) {
+        const data = await response.json();
+        vapidKey = data.publicKey;
+      }
+    }
+    
+    if (!vapidKey) {
+      alert('Error: No se pudo obtener la clave VAPID del servidor');
+      return null;
+    }
+    
+    const subscription = await swRegistration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(vapidKey)
+    });
+    
+    const response = await fetch(`${API_URL}/push-subscribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(subscription.toJSON())
+    });
+    
+    if (!response.ok) {
+      throw new Error('Error guardando suscripción en servidor');
+    }
+    
+    pushSubscription = subscription;
+    console.log('✅ Suscrito a push notifications');
+    return subscription;
+  } catch (error) {
+    console.error('Error suscribiendo a push:', error);
+    alert('Error al suscribirse: ' + error.message);
+    return null;
+  }
+}
+
+async function unsubscribeFromPush() {
+  if (!pushSubscription) {
+    return;
+  }
+  
+  try {
+    await fetch(`${API_URL}/push-unsubscribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: pushSubscription.endpoint })
+    });
+    
+    await pushSubscription.unsubscribe();
+    pushSubscription = null;
+    console.log('✅ Desuscrito de push notifications');
+  } catch (error) {
+    console.error('Error desuscribiendo:', error);
+  }
+}
+
+async function toggleSubscription() {
+  const subscribeBtn = document.getElementById('subscribe-btn');
+  subscribeBtn.disabled = true;
+  subscribeBtn.textContent = 'Cargando...';
+  
+  try {
+    if (localStorage.getItem('isSubscribed') === 'true' && pushSubscription) {
+      await unsubscribeFromPush();
+      localStorage.setItem('isSubscribed', 'false');
+      subscribeBtn.textContent = 'Suscribirse';
+    } else {
+      const subscription = await subscribeToPush();
+      if (subscription) {
+        localStorage.setItem('isSubscribed', 'true');
+        subscribeBtn.textContent = 'Suscrito ✓';
+      } else {
+        subscribeBtn.textContent = 'Suscribirse';
+      }
+    }
+  } catch (error) {
+    console.error('Error en toggle subscription:', error);
+    subscribeBtn.textContent = 'Error';
+  } finally {
+    subscribeBtn.disabled = false;
   }
 }
 
@@ -253,16 +361,22 @@ function checkSeismicAlert(magnitude) {
   console.log(`Magnitud de vibración: ${magnitude}`);
 
   if (magnitude > SEISMIC_THRESHOLD) {
-    sendSeismicAlert();
+    sendSeismicAlert(magnitude);
     lastAlertTimestamp = now;
   }
 }
 
-function sendSeismicAlert() {
-  const notification = new Notification('ALERTA SÍSMICA 🚨', {
-    body: 'Se detectó una vibración superior al umbral de seguridad.\nRevise condiciones en el área.',
-    icon: 'images/alert_noti.png'
-  });
+async function sendSeismicAlert(magnitude) {
+  try {
+    await fetch(`${API_URL}/push-seismic-alert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ magnitude })
+    });
+    console.log('Alerta sísmica enviada al servidor');
+  } catch (error) {
+    console.error('Error enviando alerta sísmica:', error);
+  }
 }
 
 document.addEventListener('DOMContentLoaded', checkSubscriptionStatus);

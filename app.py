@@ -9,12 +9,13 @@ from pathlib import Path
 
 import openai
 import paho.mqtt.client as mqtt
-from flask import Flask, jsonify, send_from_directory, send_file
+from flask import Flask, jsonify, send_from_directory, send_file, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from dotenv import load_dotenv
 import mysql.connector
 from mysql.connector import Error
+from pywebpush import webpush, WebPushException
 
 # Cargar variables de entorno
 BASE_DIR = Path(__file__).resolve().parent
@@ -36,6 +37,14 @@ MQTT_HOST = os.getenv('MQTT_HOST', 'broker.emqx.io')
 MQTT_PORT = int(os.getenv('MQTT_PORT', 8084))
 MQTT_USER = os.getenv('MQTT_USER')
 MQTT_PASSWORD = os.getenv('MQTT_PASSWORD')
+
+# Web Push VAPID
+VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY', '')
+VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '')
+VAPID_CLAIMS = {"sub": "mailto:admin@example.com"}
+
+# Almacén en memoria de suscripciones push (en producción usa base de datos)
+push_subscriptions = {}
 
 # Sensores
 SENSORS = [
@@ -545,6 +554,9 @@ def run_report_generation():
     save_report(analysis_result)
     
     print("--- Generación de informe completada ---")
+    
+    send_daily_report_notification()
+    
     return analysis_result
 
 # ==================== SCHEDULER ====================
@@ -604,6 +616,17 @@ def serve_js(filename):
 def serve_images(filename):
     return send_from_directory('images', filename)
 
+@app.route('/sw.js')
+def serve_sw():
+    response = send_file('sw.js')
+    response.headers['Content-Type'] = 'application/javascript'
+    response.headers['Service-Worker-Allowed'] = '/'
+    return response
+
+@app.route('/manifest.json')
+def serve_manifest():
+    return send_file('manifest.json', mimetype='application/manifest+json')
+
 @app.route('/generate-report', methods=['POST'])
 def handle_generate_report():
     print("\n--- Petición recibida en /generate-report ---")
@@ -625,6 +648,109 @@ def handle_latest_report():
             report['fecha'] = str(report['fecha'])
         return jsonify(report)
     return jsonify({"error": "No hay reportes disponibles."}), 404
+
+# ==================== PUSH NOTIFICATIONS ====================
+
+@app.route('/vapid-public-key', methods=['GET'])
+def get_vapid_public_key():
+    if not VAPID_PUBLIC_KEY:
+        return jsonify({"error": "VAPID keys not configured"}), 500
+    return jsonify({"publicKey": VAPID_PUBLIC_KEY})
+
+@app.route('/push-subscribe', methods=['POST'])
+def push_subscribe():
+    subscription = request.get_json()
+    if not subscription or 'endpoint' not in subscription:
+        return jsonify({"error": "Invalid subscription"}), 400
+    
+    endpoint = subscription['endpoint']
+    push_subscriptions[endpoint] = subscription
+    print(f"✅ Nueva suscripción push: {endpoint[:50]}...")
+    return jsonify({"success": True, "message": "Subscribed successfully"})
+
+@app.route('/push-unsubscribe', methods=['POST'])
+def push_unsubscribe():
+    data = request.get_json()
+    endpoint = data.get('endpoint') if data else None
+    
+    if endpoint and endpoint in push_subscriptions:
+        del push_subscriptions[endpoint]
+        print(f"✅ Suscripción eliminada: {endpoint[:50]}...")
+    
+    return jsonify({"success": True})
+
+@app.route('/push-seismic-alert', methods=['POST'])
+def push_seismic_alert():
+    data = request.get_json()
+    magnitude = data.get('magnitude', 0) if data else 0
+    
+    payload = json.dumps({
+        "title": "🚨 ALERTA SÍSMICA",
+        "body": f"Vibración detectada: {magnitude:.3f} Hz\nRevise condiciones en el área.",
+        "icon": "/images/alert_noti.png",
+        "badge": "/images/icon.png",
+        "tag": "seismic-alert",
+        "requireInteraction": True,
+        "data": {"url": "/", "type": "seismic"}
+    })
+    
+    send_push_to_all(payload)
+    return jsonify({"success": True, "subscribers": len(push_subscriptions)})
+
+def send_push_to_all(payload):
+    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
+        print("⚠️ VAPID keys not configured, skipping push")
+        return 0
+    
+    sent = 0
+    failed_endpoints = []
+    
+    for endpoint, subscription in list(push_subscriptions.items()):
+        try:
+            webpush(
+                subscription_info=subscription,
+                data=payload,
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims=VAPID_CLAIMS
+            )
+            sent += 1
+        except WebPushException as e:
+            print(f"Error enviando push a {endpoint[:30]}...: {e}")
+            if e.response and e.response.status_code in [404, 410]:
+                failed_endpoints.append(endpoint)
+        except Exception as e:
+            print(f"Error inesperado enviando push: {e}")
+    
+    for endpoint in failed_endpoints:
+        if endpoint in push_subscriptions:
+            del push_subscriptions[endpoint]
+            print(f"Suscripción expirada eliminada: {endpoint[:30]}...")
+    
+    print(f"✅ Push enviado a {sent}/{len(push_subscriptions) + len(failed_endpoints)} suscriptores")
+    return sent
+
+def send_daily_report_notification():
+    report = get_latest_report()
+    if not report:
+        return
+    
+    temp = report.get('variables', {}).get('temperatura', {}).get('promedio')
+    hum = report.get('variables', {}).get('humedad_relativa', {}).get('promedio')
+    condition = report.get('condicion_general', 'N/A')
+    
+    temp_str = f"{temp:.1f}" if temp else "N/A"
+    hum_str = f"{hum:.1f}" if hum else "N/A"
+    
+    payload = json.dumps({
+        "title": "📊 Reporte Meteorológico Diario",
+        "body": f"Temp: {temp_str}°C | Humedad: {hum_str}%\nCondición: {condition}",
+        "icon": "/images/logo_noti.png",
+        "badge": "/images/icon.png",
+        "tag": "daily-report",
+        "data": {"url": "/report.html", "type": "report"}
+    })
+    
+    send_push_to_all(payload)
 
 # ==================== MAIN ====================
 
