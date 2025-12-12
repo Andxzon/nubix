@@ -679,6 +679,20 @@ def push_unsubscribe():
     
     return jsonify({"success": True})
 
+@app.route('/push-test', methods=['POST'])
+def push_test():
+    payload = json.dumps({
+        "title": "🔔 Notificación de Prueba",
+        "body": "¡Las notificaciones push están funcionando correctamente!",
+        "icon": "/images/logo_noti.png",
+        "badge": "/images/icon.png",
+        "tag": "test-notification",
+        "data": {"url": "/", "type": "test"}
+    })
+    
+    sent = send_push_to_all(payload)
+    return jsonify({"success": True, "subscribers": len(push_subscriptions), "sent": sent})
+
 @app.route('/push-seismic-alert', methods=['POST'])
 def push_seismic_alert():
     data = request.get_json()
