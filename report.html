@@ -1,17 +1,28 @@
 <!DOCTYPE html>
 <html lang="es">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/png" href="images/icon.png">
     <title>Informes de los Últimos 7 Días</title>
+    <script>
+        if (!localStorage.getItem('auth_token')) {
+            window.location.href = 'login.html';
+        }
+    </script>
     <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js" charset="utf-8"></script>
+    <script src="js/auth_guard.js" defer></script>
 </head>
+
 <body>
     <main class="wrap">
         <header class="header">
-            <h1>Historial de Informes</h1>
-            <br>
+            <div class="header-titles">
+                <h1>Historial de Informes</h1>
+            </div>
             <div class="report-actions">
                 <select id="date-range" class="report-button">
                     <option value="7">Últimos 7 días</option>
@@ -20,6 +31,10 @@
                     <option value="all">Todos</option>
                 </select>
                 <a href="/" class="report-button">Volver al Dashboard</a>
+                <button onclick="logout()" class="icon-button">
+                    <img src="images/log-out.png" alt="Salir">
+                    <span class="button-label">Cerrar Sesión</span>
+                </button>
             </div>
         </header>
         <section id="reports-container" class="report-content-area">
@@ -30,4 +45,5 @@
     <script src="js/config.js"></script>
     <script src="js/report.js"></script>
 </body>
+
 </html>

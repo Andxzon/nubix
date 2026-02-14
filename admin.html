@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="images/icon.png">
+    <title>Panel de Administración - MeteoIoT</title>
+    <script>
+        const userStr = localStorage.getItem('user');
+        if (!userStr || JSON.parse(userStr).username !== 'admin') {
+            window.location.href = 'index.html';
+        }
+    </script>
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        .admin-dashboard {
+            display: grid;
+            gap: 25px;
+            margin-top: 20px;
+        }
+
+        .db-card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .db-card {
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 20px;
+            transition: all 0.3s ease;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        .db-card:hover {
+            transform: translateY(-5px);
+            border-color: rgba(96, 165, 250, 0.4);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.4);
+        }
+
+        .table-chip {
+            background: rgba(96, 165, 250, 0.1);
+            border: 1px solid rgba(96, 165, 250, 0.2);
+            padding: 8px 12px;
+            border-radius: 8px;
+            color: #93c5fd;
+            font-family: monospace;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-block;
+            margin: 4px;
+        }
+
+        .table-chip:hover {
+            background: rgba(96, 165, 250, 0.3);
+            color: #fff;
+            transform: scale(1.05);
+        }
+
+        .data-table-container {
+            overflow-x: auto;
+            margin-top: 20px;
+            background: rgba(15, 23, 42, 0.6);
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            color: #e6eef6;
+        }
+
+        th {
+            position: sticky;
+            top: 0;
+            background: #1e293b;
+            z-index: 10;
+            padding: 15px;
+            text-align: left;
+            color: #60a5fa;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            border-bottom: 2px solid rgba(96, 165, 250, 0.2);
+        }
+
+        td {
+            padding: 12px 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            font-size: 0.85rem;
+        }
+
+        .action-btn {
+            padding: 6px 12px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            margin: 0 4px;
+            transition: all 0.2s;
+        }
+
+        .edit-btn {
+            background: #2563eb;
+            color: white;
+        }
+
+        .delete-btn {
+            background: #dc2626;
+            color: white;
+        }
+
+        .edit-btn:hover {
+            background: #3b82f6;
+            transform: scale(1.1);
+        }
+
+        .delete-btn:hover {
+            background: #ef4444;
+            transform: scale(1.1);
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(2, 6, 23, 0.85);
+            z-index: 2000;
+            backdrop-filter: blur(8px);
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: #0f172a;
+            padding: 30px;
+            border-radius: 20px;
+            width: 90%;
+            max-width: 550px;
+            border: 1px solid rgba(96, 165, 250, 0.3);
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-body {
+            overflow-y: auto;
+            padding-right: 15px;
+            margin-bottom: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 18px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #94a3b8;
+            font-size: 0.8rem;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 10px 14px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
+            border-radius: 10px;
+            outline: none;
+            transition: border 0.3s;
+        }
+
+        .form-group input:focus {
+            border-color: #3b82f6;
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .admin-header-actions {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 15px;
+            margin-top: 10px;
+        }
+
+        /* Status colors */
+        .badge-db {
+            color: #60a5fa;
+            background: rgba(96, 165, 250, 0.1);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+        }
+    </style>
+</head>
+
+<body>
+    <main class="wrap">
+        <header class="header">
+            <div class="header-titles">
+                <h1>Panel de Control root</h1>
+                <p class="sub">Administración Maestra del Ecosistema IoT</p>
+            </div>
+            <div class="report-actions">
+                <button onclick="window.location.href='index.html'" class="icon-button">
+                    <img src="images/icon.png" alt="Icon">
+                    <span class="button-label">Dashboard</span>
+                </button>
+                <button onclick="logout()" class="icon-button">
+                    <img src="images/log-out.png" alt="Salir">
+                    <span class="button-label">Cerrar Sesión</span>
+                </button>
+            </div>
+        </header>
+
+        <section class="report-content-area" id="admin-main-view">
+            <div id="db-list-container" class="admin-dashboard">
+                <div class="loader" id="admin-loader"></div>
+                <p id="loading-text" style="text-align: center; color: #94a3b8;">Sincronizando con el servidor de base
+                    de datos...</p>
+                <div class="db-card-grid" id="db-grid"></div>
+            </div>
+
+            <div id="table-view-container" style="display: none;">
+                <div class="admin-header-actions">
+                    <div style="display: flex; align-items: center; gap: 15px;">
+                        <button onclick="backToDbs()" class="report-button"
+                            style="background: rgba(255,255,255,0.05);">← Volver</button>
+                        <h2 id="current-table-title" style="color: #60a5fa; margin: 0; font-size: 1.2rem;"></h2>
+                    </div>
+                    <button id="add-user-btn" onclick="openAddUserModal()" class="report-button"
+                        style="display: none; background: #059669;">+ Nuevo Usuario</button>
+                </div>
+                <div class="data-table-container" id="table-data-wrapper"></div>
+            </div>
+        </section>
+
+        <footer class="footer">Ecosistema Meteorológico Inteligente © 2026</footer>
+    </main>
+
+    <!-- Modal para Editar -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <h3 id="modal-title"
+                style="color: #60a5fa; margin-bottom: 25px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 15px;">
+                Editar Registro
+            </h3>
+            <div class="modal-body">
+                <form id="editForm"></form>
+            </div>
+            <div class="modal-actions">
+                <button onclick="closeModal()" class="report-button"
+                    style="background: #334155; padding: 10px 25px;">Cancelar</button>
+                <button id="modal-save-btn" onclick="saveChanges()" class="report-button"
+                    style="background: #2563eb; padding: 10px 25px;">Actualizar</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/auth_guard.js"></script>
+    <script>
+        let currentDb = '';
+        let currentTable = '';
+        let primaryKey = '';
+        let isAddingUser = false;
+
+        async function loadDbInfo() {
+            try {
+                const response = await fetch('/api/admin/db-info');
+                const data = await response.json();
+
+                const grid = document.getElementById('db-grid');
+                const loader = document.getElementById('admin-loader');
+                const loadingText = document.getElementById('loading-text');
+
+                if (loader) loader.style.display = 'none';
+                if (loadingText) loadingText.style.display = 'none';
+
+                if (response.ok) {
+                    let html = '';
+                    for (const [dbName, tables] of Object.entries(data)) {
+                        html += `
+                            <div class="db-card">
+                                <span class="badge-db">MySQL Server</span>
+                                <h2 style="color: #60a5fa; margin: 10px 0 20px 0; font-family: monospace;">${dbName}</h2>
+                                <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                                    ${tables.map(table => `
+                                        <div onclick="viewTable('${dbName}', '${table}')" class="table-chip">
+                                            ${table}
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        `;
+                    }
+                    grid.innerHTML = html || '<p>Servidor vacío.</p>';
+                } else {
+                    grid.innerHTML = `<p class="error-message">Fallo de conexión: ${data.error}</p>`;
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        async function viewTable(db, table) {
+            currentDb = db;
+            currentTable = table;
+            document.getElementById('db-list-container').style.display = 'none';
+            document.getElementById('table-view-container').style.display = 'block';
+            document.getElementById('current-table-title').innerText = `Inspector: ${db}.${table}`;
+
+            // Show Add User button only for accounts.users
+            const addUserBtn = document.getElementById('add-user-btn');
+            if (db === 'accounts' && table === 'users') {
+                addUserBtn.style.display = 'block';
+            } else {
+                addUserBtn.style.display = 'none';
+            }
+
+            const wrapper = document.getElementById('table-data-wrapper');
+            wrapper.innerHTML = '<div style="padding: 50px; text-align: center;"><div class="loader"></div><p style="margin-top: 15px; color: #94a3b8;">Recuperando registros...</p></div>';
+
+            try {
+                const response = await fetch(`/api/admin/table-data/${db}/${table}`);
+                const data = await response.json();
+
+                if (response.ok) {
+                    const columns = data.columns;
+                    const rows = data.rows;
+
+                    const pkColObj = columns.find(c => c.Key === 'PRI') || columns[0];
+                    primaryKey = pkColObj.Field;
+
+                    let html = '<table><thead><tr>';
+                    columns.forEach(col => html += `<th>${col.Field}</th>`);
+                    html += '<th style="text-align: center; width: 150px;">Control</th></tr></thead><tbody>';
+
+                    if (rows.length === 0) {
+                        html += `<tr><td colspan="${columns.length + 1}" style="text-align: center; padding: 40px; color: #64748b;">La tabla está vacía.</td></tr>`;
+                    } else {
+                        rows.forEach(row => {
+                            html += '<tr>';
+                            columns.forEach(col => {
+                                let val = row[col.Field];
+                                if (val === null) val = '<em style="color:#475569">NULL</em>';
+                                html += `<td>${val}</td>`;
+                            });
+                            html += `
+                                <td style="text-align: center;">
+                                    <button class="action-btn edit-btn" onclick='openEditModal(${JSON.stringify(row)})'>✎</button>
+                                    <button class="action-btn delete-btn" onclick="deleteRow('${row[primaryKey]}')">🗑</button>
+                                </td>
+                            </tr>`;
+                        });
+                    }
+
+                    html += '</tbody></table>';
+                    wrapper.innerHTML = html;
+                } else {
+                    wrapper.innerHTML = `<p class="error-message">${data.error}</p>`;
+                }
+            } catch (e) {
+                wrapper.innerHTML = '<p class="error-message">Error de comunicación crítica con el servidor.</p>';
+            }
+        }
+
+        function backToDbs() {
+            document.getElementById('db-list-container').style.display = 'flex';
+            document.getElementById('table-view-container').style.display = 'none';
+        }
+
+        async function deleteRow(val) {
+            if (!confirm('Esta acción es irreversible. ¿Seguro de eliminar el registro?')) return;
+            try {
+                const res = await fetch('/api/admin/delete-row', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        db: currentDb,
+                        table: currentTable,
+                        pk_col: primaryKey,
+                        pk_val: val
+                    })
+                });
+                if ((await res.json()).success) viewTable(currentDb, currentTable);
+            } catch (e) { alert('Falla en el borrado.'); }
+        }
+
+        function openAddUserModal() {
+            isAddingUser = true;
+            document.getElementById('modal-title').innerText = 'Agregar Nuevo Usuario';
+            document.getElementById('modal-save-btn').innerText = 'Crear Usuario';
+            document.getElementById('modal-save-btn').onclick = createNewUser;
+
+            const form = document.getElementById('editForm');
+            form.innerHTML = `
+                <div class="form-group">
+                    <label>Usuario</label>
+                    <input type="text" name="username" placeholder="Ej: eslif" required>
+                </div>
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" name="email" placeholder="admin@admin.com" required>
+                </div>
+                <div class="form-group">
+                    <label>Contraseña</label>
+                    <input type="password" name="password" placeholder="••••••••" required>
+                </div>
+                <p style="font-size: 0.7rem; color: #94a3b8; font-style: italic;">Nota: La fecha de creación y último inicio se gestionarán automáticamente.</p>
+            `;
+            document.getElementById('editModal').style.display = 'flex';
+        }
+
+        async function createNewUser() {
+            const formData = new FormData(document.getElementById('editForm'));
+            const userData = {};
+            formData.forEach((val, key) => userData[key] = val);
+
+            if (!userData.username || !userData.email || !userData.password) {
+                alert('Todos los campos son obligatorios');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/admin/add-user', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(userData)
+                });
+                const result = await res.json();
+                if (result.success) {
+                    closeModal();
+                    viewTable('accounts', 'users');
+                } else {
+                    alert(result.error);
+                }
+            } catch (e) { alert('Error al crear usuario'); }
+        }
+
+        function openEditModal(row) {
+            isAddingUser = false;
+            editRowData = row;
+            document.getElementById('modal-title').innerText = 'Editar Registro';
+            document.getElementById('modal-save-btn').innerText = 'Actualizar';
+            document.getElementById('modal-save-btn').onclick = saveChanges;
+
+            const form = document.getElementById('editForm');
+            form.innerHTML = '';
+
+            Object.keys(row).forEach(key => {
+                const val = row[key] === null ? '' : row[key];
+                const isPk = key === primaryKey;
+                // Protection: don't allow editing dates or ID
+                const isProtected = isPk || key === 'created_at' || key === 'last_login';
+
+                form.innerHTML += `
+                    <div class="form-group">
+                        <label>${key} ${isProtected ? '(Sólo Lectura)' : ''}</label>
+                        <input type="text" name="${key}" value="${val}" ${isProtected ? 'disabled style="background: rgba(255,255,255,0.02); opacity: 0.6;"' : ''}>
+                    </div>
+                `;
+            });
+            document.getElementById('editModal').style.display = 'flex';
+        }
+
+        function closeModal() {
+            document.getElementById('editModal').style.display = 'none';
+        }
+
+        async function saveChanges() {
+            const formData = new FormData(document.getElementById('editForm'));
+            const updates = {};
+            formData.forEach((val, key) => {
+                if (key !== primaryKey) updates[key] = val;
+            });
+
+            try {
+                const res = await fetch('/api/admin/update-row', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        db: currentDb,
+                        table: currentTable,
+                        pk_col: primaryKey,
+                        pk_val: editRowData[primaryKey],
+                        updates: updates
+                    })
+                });
+                if ((await res.json()).success) {
+                    closeModal();
+                    viewTable(currentDb, currentTable);
+                }
+            } catch (e) { alert('Error al procesar la actualización.'); }
+        }
+
+        window.onclick = function (event) {
+            const modal = document.getElementById('editModal');
+            if (event.target == modal) closeModal();
+        }
+
+        document.addEventListener('DOMContentLoaded', loadDbInfo);
+    </script>
+</body>
+
+</html>

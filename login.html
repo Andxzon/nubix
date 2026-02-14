@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/png" href="images/icon.png">
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#16213e">
+    <title>Iniciar Sesión - MeteoIoT</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+    <div class="login-wrapper">
+        <main class="login-card">
+            <img src="images/logo_noti.png" alt="MeteoIoT Logo" class="login-logo" onerror="this.src='images/icon.png'">
+
+            <h1 class="login-title">Bienvenido</h1>
+
+            <form class="login-form">
+                <div class="input-group">
+                    <input type="text" placeholder="Usuario" class="login-input" required>
+                </div>
+
+                <div class="input-group">
+                    <input type="password" placeholder="Contraseña" class="login-input" required>
+                </div>
+
+                <button type="submit" class="login-btn">Acceder</button>
+            </form>
+
+            <div class="login-extra-links">
+                <a href="#" class="forgot-password">¿Olvidaste tu contraseña?</a>
+            </div>
+        </main>
+    </div>
+    <script src="js/login.js"></script>
+</body>
+
+</html>
