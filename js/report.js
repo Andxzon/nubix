@@ -7,14 +7,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const div = document.createElement('div');
         div.className = 'report-item';
 
-        const condicionClass = {
-            'Sistema Estable': 'status-optimal',
-            'Operación Normal': 'status-stable',
-            'Fluctuación Detectada': 'status-variable',
-            'Inestabilidad Atmosférica': 'status-alert',
-            'Fenómeno Extremo': 'status-critical'
-        }[data.condicion_general] || 'status-stable';
-
         const reportId = data.id || Math.floor(Math.random() * 1000000);
         const plotlyId = `plotly-scatter-${reportId}`;
         const radarId = `radarChart-${reportId}`;
@@ -29,8 +21,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
                 <div class="header-meta">
                     <span>🕐 ${data.hora_inicio || '--:--'} - ${data.hora_fin || '--:--'}</span>
-                    <span>⏱️ ${data.duracion_monitoreo || '0h 0m'}</span>
-                    <span>📈 ${data.total_lecturas || 0} muestras</span>
                 </div>
             </div>
 
@@ -79,6 +69,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             </section>
 
+            ${data.hourly_trends && Object.keys(data.hourly_trends).length > 0 ? `
+            <section class="report-section hourly-section">
+                <h3>🕰️ Comportamiento Horario (00:00 - 23:00)</h3>
+                <div class="hourly-charts-grid">
+                    <div class="chart-box" style="height: 250px; position: relative; width: 100%;"><canvas id="hourly-temp-${reportId}"></canvas></div>
+                    <div class="chart-box" style="height: 250px; position: relative; width: 100%;"><canvas id="hourly-pres-${reportId}"></canvas></div>
+                    <div class="chart-box" style="height: 250px; position: relative; width: 100%;"><canvas id="hourly-hum-${reportId}"></canvas></div>
+                    <div class="chart-box" style="height: 250px; position: relative; width: 100%;"><canvas id="hourly-luz-${reportId}"></canvas></div>
+                    <div class="chart-box" style="height: 250px; position: relative; width: 100%;"><canvas id="hourly-soil-${reportId}"></canvas></div>
+                    <div class="chart-box" style="height: 250px; position: relative; width: 100%;"><canvas id="hourly-vib-${reportId}"></canvas></div>
+                </div>
+            </section>
+            ` : ''}
+
             ${data.correlaciones && data.correlaciones.length > 0 ? `
             <section class="report-section">
                 <h3>🔗 Análisis de Correlaciones Detectadas</h3>
@@ -123,26 +127,84 @@ document.addEventListener('DOMContentLoaded', () => {
             </section>
         `;
 
-        // Initialize Charts after adding to DOM
         setTimeout(() => {
-            if (data.plotly_scatter_data) {
-                initPlotlyScatter(plotlyId, data.plotly_scatter_data);
-            }
-
-            if (data.radar_estabilidad) {
-                initRadarChart(radarId, data.radar_estabilidad);
-            }
+            renderCharts(data, reportId, plotlyId, radarId);
         }, 100);
-
 
         return div;
     };
+
+
+    window.toggleReport = (id) => {
+        // No longer used, but kept for compatibility during transition
+    };
+
+    const renderCharts = (data, reportId, plotlyId, radarId) => {
+        if (data.plotly_scatter_data) {
+            initPlotlyScatter(plotlyId, data.plotly_scatter_data);
+        }
+
+        if (data.radar_estabilidad) {
+            initRadarChart(radarId, data.radar_estabilidad);
+        }
+        
+        if (data.hourly_trends && Object.keys(data.hourly_trends).length > 0) {
+            initHourlyChart(`hourly-temp-${reportId}`, 'Temperatura (°C)', data.hourly_trends.temperatura, '#ef4444');
+            initHourlyChart(`hourly-pres-${reportId}`, 'Presión (hPa)', data.hourly_trends.presion, '#10b981');
+            initHourlyChart(`hourly-hum-${reportId}`, 'Humedad (%)', data.hourly_trends.humedad, '#3b82f6');
+            initHourlyChart(`hourly-luz-${reportId}`, 'Luz (lux)', data.hourly_trends.luz, '#f59e0b');
+            initHourlyChart(`hourly-soil-${reportId}`, 'Humedad Suelo (%)', data.hourly_trends.humedad_suelo, '#8b5cf6');
+            initHourlyChart(`hourly-vib-${reportId}`, 'Vibración (g)', data.hourly_trends.vibracion, '#f97316');
+        }
+    };
+
 
     const getStabilityColor = (val) => {
         if (val > 80) return '#10b981';
         if (val > 60) return '#3b82f6';
         if (val > 40) return '#f59e0b';
         return '#ef4444';
+    };
+
+    const initHourlyChart = (canvasId, label, dataArray, color) => {
+        const ctx = document.getElementById(canvasId)?.getContext('2d');
+        if (!ctx) return;
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array.from({length: 24}, (_, i) => `${i.toString().padStart(2, '0')}:00`),
+                datasets: [{
+                    label: label,
+                    data: dataArray,
+                    borderColor: color,
+                    backgroundColor: color + '33',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        grid: { color: 'rgba(255,255,255,0.05)' },
+                        ticks: { color: '#64748b', maxTicksLimit: 8 }
+                    },
+                    y: {
+                        grid: { color: 'rgba(255,255,255,0.05)' },
+                        ticks: { color: '#64748b' }
+                    }
+                },
+                plugins: {
+                    legend: { display: false },
+                    title: { display: true, text: label, color: '#f1f5f9' },
+                    tooltip: { mode: 'index', intersect: false }
+                }
+            }
+        });
     };
 
     const initRadarChart = (canvasId, radarData) => {
@@ -334,6 +396,7 @@ document.addEventListener('DOMContentLoaded', () => {
             reportsContainer.innerHTML = '<div style="text-align:center; padding:50px; color:#64748b;"><h3>No se encontraron reportes previos</h3><p>Genera un análisis desde el dashboard principal.</p></div>';
         }
     };
+
 
     dateRangeSelect.addEventListener('change', () => {
         loadReports();

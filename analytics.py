@@ -29,6 +29,11 @@ def generate_scatter_plot_img(readings: list[dict]):
         # Preparación científica
         df = pd.DataFrame(readings)
         df = df.dropna(subset=['temperatura', 'humedad', 'luz']).copy()
+        
+        # Optimización: Reducir densidad al 30% para no saturar la imagen
+        if len(df) > 1000:
+            df = df.sample(frac=0.3, random_state=42).sort_index()
+            
         df['temperatura'] = df['temperatura'].astype(float)
         df['humedad'] = df['humedad'].astype(float)
         df['luz'] = df['luz'].astype(float)
@@ -104,6 +109,10 @@ def generate_plotly_data(readings: list[dict]):
     try:
         df = pd.DataFrame(readings)
         df = df.dropna(subset=['temperatura', 'humedad', 'luz', 'presion']).copy()
+        
+        # Optimización: Reducir densidad al 30% para aligerar la carga del navegador
+        if len(df) > 1000:
+            df = df.sample(frac=0.3, random_state=42).sort_index()
         
         # Convertir a tipos nativos para JSON
         df['temperatura'] = df['temperatura'].astype(float)
@@ -463,6 +472,42 @@ def calculate_pressure_forecast(pressure_avg: float, pressure_trend: dict) -> st
         return "sin_cambios_significativos"
 
 
+def generate_hourly_data(readings: list[dict]) -> dict:
+    """Genera promedios por hora de todas las variables para el reporte en el frontend."""
+    if not readings:
+        return {}
+    
+    df = pd.DataFrame(readings)
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df['hour'] = df['timestamp'].dt.hour
+    
+    # Agrupar por hora con promedio
+    cols_to_avg = ['temperatura', 'humedad', 'luz', 'humedad_suelo', 'presion', 'vibracion']
+    existing_cols = [c for c in cols_to_avg if c in df.columns]
+    
+    # Se asegura que sean numéricos 
+    for c in existing_cols:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+        
+    hourly_avg = df.groupby('hour')[existing_cols].mean().round(2)
+    
+    result = {}
+    hours = list(range(24))
+    for var in cols_to_avg:
+        values = []
+        if var in hourly_avg.columns:
+            for h in hours:
+                if h in hourly_avg.index and pd.notnull(hourly_avg.loc[h, var]):
+                    values.append(float(hourly_avg.loc[h, var]))
+                else:
+                    values.append(None)
+        else:
+            values = [None] * 24
+        result[var] = values
+        
+    return result
+
+
 def analyze_readings(readings: list[dict]) -> dict:
     """
     Función principal: Analiza todas las lecturas y genera JSON estructurado.
@@ -509,7 +554,7 @@ def analyze_readings(readings: list[dict]) -> dict:
     alerts.extend(check_thresholds(hum_stats, {"min": 20, "max": 95, "variable": "humedad"}))
     alerts.extend(check_thresholds(soil_stats, {"min": 25, "max": 90, "variable": "humedad_suelo"}))
     alerts.extend(check_thresholds(light_stats, {"min": 100, "max": 100000, "variable": "luz"}))
-    alerts.extend(check_thresholds(vib_stats, {"min": 1.0, "max": 1.060, "variable": "vibracion"}))
+    alerts.extend(check_thresholds(vib_stats, {"min": 0.9, "max": 1.060, "variable": "vibracion"}))
     
     correlations = []
     
@@ -602,6 +647,7 @@ def analyze_readings(readings: list[dict]) -> dict:
     analysis = {
         "scatter_plot_img": generate_scatter_plot_img(readings),
         "plotly_scatter_data": generate_plotly_data(readings),
+        "hourly_trends": generate_hourly_data(readings),
         "metadata": {
             "generated_at": now.isoformat(),
             "date": now.strftime("%Y-%m-%d"),

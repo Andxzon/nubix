@@ -67,6 +67,19 @@ body {
   align-items: stretch;
 }
 
+.hourly-charts-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 20px;
+}
+
+@media (max-width: 900px) {
+  .hourly-charts-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* carta para cada canvas */
 .card {
   background: linear-gradient(180deg, var(--card), rgba(10, 16, 30, 0.6));
@@ -391,6 +404,57 @@ canvas {
 .status-critical {
   background: linear-gradient(135deg, #7f1d1d, #991b1b);
   color: white;
+}
+
+/* Collapsible Reports */
+.report-item {
+  background: var(--glass);
+  border-radius: var(--radius);
+  margin-bottom: 24px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  transition: all 0.3s ease;
+}
+
+.report-header {
+  padding: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.header-main {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.header-main h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.report-badge {
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.badge-ok { background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
+.badge-warn { background: rgba(245, 158, 11, 0.2); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); }
+
+/* Icons no longer needed for non-collapsible */
+.toggle-icon {
+  display: none;
+}
+
+.report-body {
+  padding: 20px;
+  overflow: visible;
+  opacity: 1;
 }
 
 .report-meta {

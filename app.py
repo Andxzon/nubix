@@ -70,7 +70,7 @@ SENSORS = [
     {'id': 'humChart',   'label': 'Humedad',       'unit': '%',   'topic': 'clima/humedad'},
     {'id': 'soilChart',  'label': 'Humedad suelo', 'unit': '%',   'topic': 'clima/humedad_suelo'},
     {'id': 'lightChart', 'label': 'Luz',           'unit': 'lux', 'topic': 'clima/lux'},
-    {'id': 'vibrChart',  'label': 'Vibración',     'unit': 'Hz',  'topic': 'clima/vibracion'}
+    {'id': 'vibrChart',  'label': 'Vibración',     'unit': 'g',  'topic': 'clima/vibracion'}
 ]
 
 # ==================== FLASK APP ====================
@@ -268,6 +268,36 @@ def get_readings_for_period(hours: int = 24) -> list:
     except Error as e:
         print(f"Error obteniendo lecturas: {e}")
         return []
+
+def get_readings_sample_for_range(start_ts, end_ts, limit=100) -> list:
+    """Obtiene una muestra de lecturas para un rango de tiempo específico."""
+    conn = get_connection()
+    if not conn: return []
+    try:
+        cursor = conn.cursor(dictionary=True)
+        # Downsample usando OFFSET o simplemente LIMIT si son pocas
+        cursor.execute('''
+            SELECT temperatura, humedad, presion, timestamp 
+            FROM sensor_readings 
+            WHERE timestamp BETWEEN %s AND %s
+            ORDER BY id DESC LIMIT %s
+        ''', (start_ts, end_ts, limit))
+        samples = cursor.fetchall()
+        
+        return [
+            {
+                "x": float(s["temperatura"]) if s["temperatura"] is not None else 0, 
+                "y": float(s["humedad"]) if s["humedad"] is not None else 0, 
+                "p": float(s["presion"]) if s["presion"] is not None else 0, 
+                "t": s["timestamp"].strftime("%H:%M:%S") if s["timestamp"] else ""
+            }
+            for s in samples if s["temperatura"] is not None and s["humedad"] is not None
+        ]
+    except Exception as e:
+        print(f"Error en get_readings_sample: {e}")
+        return []
+    finally:
+        if conn: conn.close()
 
 def clear_old_readings(days: int = 7):
     conn = get_connection()
@@ -483,12 +513,9 @@ def transform_alert_for_frontend(alert: dict) -> dict:
     
     # Mensajes específicos por variable
     if variable == 'vibracion':
-        if alert_type == 'umbral_maximo':
-            mensaje = f"⚠️ Vibración elevada detectada: {actual} Hz (umbral: {threshold} Hz). Posible actividad sísmica o perturbación mecánica."
-            accion = "Verificar estabilidad del sensor y revisar posibles fuentes de vibración externa"
-        else:
-            mensaje = f"⚠️ Vibración muy baja: {actual} Hz (mínimo: {threshold} Hz). El sensor podría estar desconectado o dañado."
-            accion = "Revisar conexión y funcionamiento del sensor de vibración"
+        dir_text = "elevada" if alert_type == 'umbral_maximo' else "anómala"
+        mensaje = f"⚠️ Vibración {dir_text} detectada: {actual} g (esperado cerca a 1.0g). Posible actividad sísmica o perturbación."
+        accion = "Verificar las condiciones de seguridad en el área física del sensor"
     elif variable == 'temperatura':
         if alert_type == 'umbral_maximo':
             mensaje = f"Temperatura alta: {actual}°C (máximo recomendado: {threshold}°C)"
@@ -528,17 +555,116 @@ def transform_correlation_for_frontend(corr: dict) -> str:
     return f"Correlación {strength} {corr_type} entre {vars_str} (r={coef})"
 
 
+def format_report_for_frontend(result: dict) -> dict:
+    """Helper para transformar un fila de la DB en el formato del frontend."""
+    backend_analysis = json.loads(result.get('analysis_json', '{}')) if result.get('analysis_json') else {}
+    recommendations = json.loads(result.get('recommendations', '[]')) if result.get('recommendations') else []
+    backend_alerts = backend_analysis.get('alerts', [])
+    backend_correlations = backend_analysis.get('correlations', [])
+    backend_variables = backend_analysis.get('variables', {})
+    
+    variables_frontend = {
+        "temperatura": transform_variable_for_frontend(backend_variables.get('temperatura'), 'temperatura'),
+        "presion": transform_variable_for_frontend(backend_variables.get('presion'), 'presion'),
+        "humedad": transform_variable_for_frontend(backend_variables.get('humedad'), 'humedad'),
+        "luz": transform_variable_for_frontend(backend_variables.get('luz'), 'luz'),
+        "humedad_suelo": transform_variable_for_frontend(backend_variables.get('humedad_suelo'), 'humedad_suelo'),
+        "vibracion": transform_variable_for_frontend(backend_variables.get('vibracion'), 'vibracion')
+    }
+
+    soil_status = backend_analysis.get('derived_analysis', {}).get('soil_status', {})
+    if variables_frontend.get('humedad_suelo'):
+        variables_frontend['humedad_suelo']['estado'] = soil_status.get('status', '').replace('_', ' ')
+        variables_frontend['humedad_suelo']['necesita_intervencion'] = soil_status.get('needs_irrigation', False)
+    
+    pressure_forecast = backend_analysis.get('derived_analysis', {}).get('pressure_forecast', '')
+    if variables_frontend.get('presion'):
+        forecast_map = {
+            'deterioro_probable': 'Posible deterioro del clima',
+            'mejora_probable': 'Probable mejora del clima',
+            'inestabilidad_posible': 'Posible inestabilidad atmosférica',
+            'estabilidad_esperada': 'Se espera estabilidad',
+            'sin_cambios_significativos': 'Sin cambios significativos'
+        }
+        variables_frontend['presion']['pronostico'] = forecast_map.get(pressure_forecast, '')
+    
+    alertas_frontend = [transform_alert_for_frontend(a) for a in backend_alerts]
+    
+    correlation_insights = json.loads(result.get('correlation_insights', '[]')) if result.get('correlation_insights') else []
+    if correlation_insights and len(correlation_insights) > 0:
+        correlaciones_frontend = correlation_insights
+    else:
+        correlaciones_frontend = [transform_correlation_for_frontend(c) for c in backend_correlations]
+    
+    condicion_map = {
+        'optimo': 'Atmósfera Estable',
+        'estable': 'Condición Normal',
+        'variable': 'Fluctuación Atmosférica',
+        'alerta': 'Inestabilidad Detectada',
+        'critico': 'Anomalía Significativa'
+    }
+
+    llm_status = result.get('weather_status')
+    condicion = result.get('general_condition', 'estable')
+    final_condition = llm_status if llm_status else condicion_map.get(condicion, condicion.title())
+
+    report = {
+        "id": result.get('id'),
+        "fecha": str(result.get('fecha')),
+        "hora_inicio": str(result.get('time_range_start', '')),
+        "hora_fin": str(result.get('time_range_end', '')),
+        "duracion_monitoreo": f"{result.get('duration_minutes', 0) // 60}h {result.get('duration_minutes', 0) % 60}m",
+        "total_lecturas": result.get('total_readings'),
+        "condicion_general": final_condition,
+
+        "resumen_ejecutivo": result.get('executive_summary'),
+        "estabilidad_ambiental": backend_analysis.get('environmental_stability', {}).get('overall', {}),
+        "radar_estabilidad": backend_analysis.get('environmental_stability', {}).get('radar', {}),
+        "scatter_plot_img": backend_analysis.get('scatter_plot_img'),
+        "plotly_scatter_data": backend_analysis.get('plotly_scatter_data'),
+        "hourly_trends": backend_analysis.get('hourly_trends', {}),
+        "variables": variables_frontend,
+        "correlaciones": correlaciones_frontend,
+        "alertas": alertas_frontend,
+        "recomendaciones": recommendations,
+        "observaciones": result.get('observations'),
+        "interpretacion": result.get('interpretation'),
+        "calidad_datos": {
+            "completitud": f"{float(result.get('data_quality_score', 0))}%",
+            "confiabilidad": result.get('data_reliability', '').replace('_', ' ').title() if result.get('data_reliability') else 'Desconocida',
+            "sensores_problematicos": backend_analysis.get('data_quality', {}).get('problematic_sensors', [])
+        },
+        "metadata": {
+            "llm_model": result.get('llm_model'),
+            "tokens_used": result.get('llm_tokens_used'),
+            "generated_at": str(result.get('created_at'))
+        }
+    }
+    
+    # Nube de puntos
+    try:
+        f_date = result.get('fecha')
+        t_start = result.get('time_range_start')
+        t_end = result.get('time_range_end')
+        
+        if f_date and t_start and t_end:
+            start_ts = f"{str(f_date)} {str(t_start)}"
+            end_ts = f"{str(f_date)} {str(t_end)}"
+            report["nube_puntos"] = get_readings_sample_for_range(start_ts, end_ts)
+        else:
+            report["nube_puntos"] = []
+    except Exception as e:
+        print(f"Error cargando nube de puntos para reporte id {result.get('id')}: {e}")
+        report["nube_puntos"] = []
+    
+    return report
+
 def get_latest_report() -> dict | None:
-    """
-    Obtiene el último reporte completo combinando datos de reports y reports_ia.
-    Transforma el formato del backend al formato esperado por el frontend.
-    """
+    """Obtiene el último reporte completo."""
     conn = get_connection()
-    if not conn:
-        return None
+    if not conn: return None
     try:
         cursor = conn.cursor(dictionary=True)
-        
         cursor.execute('''
             SELECT r.*, ri.weather_status, ri.executive_summary, ri.interpretation, 
                    ri.recommendations, ri.observations, ri.alert_explanations,
@@ -546,137 +672,46 @@ def get_latest_report() -> dict | None:
                    ri.llm_response_time_ms
             FROM reports r
             LEFT JOIN reports_ia ri ON r.id = ri.report_id
-            ORDER BY r.created_at DESC
-            LIMIT 1
+            ORDER BY r.id DESC LIMIT 1
         ''')
         result = cursor.fetchone()
-        
-        if not result:
-            cursor.close()
-            conn.close()
-            return None
-        
-        backend_analysis = json.loads(result.get('analysis_json', '{}')) if result.get('analysis_json') else {}
-        recommendations = json.loads(result.get('recommendations', '[]')) if result.get('recommendations') else []
-        backend_alerts = backend_analysis.get('alerts', [])
-        backend_correlations = backend_analysis.get('correlations', [])
-        backend_variables = backend_analysis.get('variables', {})
-        
-        variables_frontend = {
-            "temperatura": transform_variable_for_frontend(backend_variables.get('temperatura'), 'temperatura'),
-            "presion": transform_variable_for_frontend(backend_variables.get('presion'), 'presion'),
-            "humedad": transform_variable_for_frontend(backend_variables.get('humedad'), 'humedad'),
-            "luz": transform_variable_for_frontend(backend_variables.get('luz'), 'luz'),
-            "humedad_suelo": transform_variable_for_frontend(backend_variables.get('humedad_suelo'), 'humedad_suelo'),
-            "vibracion": transform_variable_for_frontend(backend_variables.get('vibracion'), 'vibracion')
-        }
+        if not result: return None
+        return format_report_for_frontend(result)
+    finally:
+        if conn: conn.close()
 
+def get_reports_by_range(days: int | str) -> list[dict]:
+    """Obtiene reportes para los últimos N días."""
+    conn = get_connection()
+    if not conn: return []
+    try:
+        cursor = conn.cursor(dictionary=True)
+        query = '''
+            SELECT r.*, ri.weather_status, ri.executive_summary, ri.interpretation, 
+                   ri.recommendations, ri.observations, ri.alert_explanations,
+                   ri.correlation_insights, ri.llm_model, ri.llm_tokens_used,
+                   ri.llm_response_time_ms
+            FROM reports r
+            LEFT JOIN reports_ia ri ON r.id = ri.report_id
+        '''
+        if days != 'all':
+            try:
+                days_int = int(days)
+                query += f" WHERE r.fecha >= DATE_SUB(CURDATE(), INTERVAL {days_int} DAY)"
+            except ValueError:
+                pass # Si no es un nmero, ignorar filtro
         
-        soil_status = backend_analysis.get('derived_analysis', {}).get('soil_status', {})
-        if variables_frontend.get('humedad_suelo'):
-            variables_frontend['humedad_suelo']['estado'] = soil_status.get('status', '').replace('_', ' ')
-            variables_frontend['humedad_suelo']['necesita_intervencion'] = soil_status.get('needs_irrigation', False)
+        query += " ORDER BY r.id DESC"
         
-        pressure_forecast = backend_analysis.get('derived_analysis', {}).get('pressure_forecast', '')
-        if variables_frontend.get('presion'):
-            forecast_map = {
-                'deterioro_probable': 'Posible deterioro del clima',
-                'mejora_probable': 'Probable mejora del clima',
-                'inestabilidad_posible': 'Posible inestabilidad atmosférica',
-                'estabilidad_esperada': 'Se espera estabilidad',
-                'sin_cambios_significativos': 'Sin cambios significativos'
-            }
-            variables_frontend['presion']['pronostico'] = forecast_map.get(pressure_forecast, '')
-        
-        alertas_frontend = [transform_alert_for_frontend(a) for a in backend_alerts]
-        
-        # Usar los insights del LLM si existen, sino usar las correlaciones técnicas
-        correlation_insights = json.loads(result.get('correlation_insights', '[]')) if result.get('correlation_insights') else []
-        if correlation_insights and len(correlation_insights) > 0:
-            correlaciones_frontend = correlation_insights
-        else:
-            correlaciones_frontend = [transform_correlation_for_frontend(c) for c in backend_correlations]
-        
-        condicion_map = {
-            'optimo': 'Atmósfera Estable',
-            'estable': 'Condición Normal',
-            'variable': 'Fluctuación Atmosférica',
-            'alerta': 'Inestabilidad Detectada',
-            'critico': 'Anomalía Significativa'
-        }
-
-        # Priorizar el status del LLM si está disponible
-        llm_status = result.get('weather_status')
-        final_condition = llm_status if llm_status else condicion_map.get(condicion, condicion.title())
-
-        report = {
-            "fecha": str(result.get('fecha')),
-            "hora_inicio": str(result.get('time_range_start', '')),
-            "hora_fin": str(result.get('time_range_end', '')),
-            "duracion_monitoreo": f"{result.get('duration_minutes', 0) // 60}h {result.get('duration_minutes', 0) % 60}m",
-            "total_lecturas": result.get('total_readings'),
-            "condicion_general": final_condition,
-
-            "resumen_ejecutivo": result.get('executive_summary'),
-            "estabilidad_ambiental": backend_analysis.get('environmental_stability', {}).get('overall', {}),
-            "radar_estabilidad": backend_analysis.get('environmental_stability', {}).get('radar', {}),
-            "scatter_plot_img": backend_analysis.get('scatter_plot_img'),
-            "plotly_scatter_data": backend_analysis.get('plotly_scatter_data'),
-            "variables": variables_frontend,
-            "correlaciones": correlaciones_frontend,
-            "alertas": alertas_frontend,
-            "recomendaciones": recommendations,
-            "observaciones": result.get('observations'),
-            "interpretacion": result.get('interpretation'),
-            "calidad_datos": {
-                "completitud": f"{float(result.get('data_quality_score', 0))}%",
-
-                "confiabilidad": result.get('data_reliability', '').replace('_', ' ').title() if result.get('data_reliability') else 'Desconocida',
-                "sensores_problematicos": backend_analysis.get('data_quality', {}).get('problematic_sensors', [])
-            },
-            "metadata": {
-                "llm_model": result.get('llm_model'),
-                "tokens_used": result.get('llm_tokens_used'),
-                "generated_at": str(result.get('created_at'))
-            }
-        }
-        
-        # Inyectar nube de puntos (últimos 100 puntos del rango del reporte)
-        try:
-            # Asegurar formato string para los rangos de tiempo
-            f_date = str(result['fecha'])
-            t_start = str(result['time_range_start'])
-            t_end = str(result['time_range_end'])
-            
-            start_ts = f"{f_date} {t_start}"
-            end_ts = f"{f_date} {t_end}"
-            
-            cursor.execute("SELECT temperatura, humedad, presion, timestamp FROM sensor_readings WHERE timestamp BETWEEN %s AND %s ORDER BY timestamp DESC LIMIT 100", 
-                           (start_ts, end_ts))
-            samples = cursor.fetchall()
-            report["nube_puntos"] = [
-                {
-                    "x": float(s["temperatura"]) if s["temperatura"] is not None else 0, 
-                    "y": float(s["humedad"]) if s["humedad"] is not None else 0, 
-                    "p": float(s["presion"]) if s["presion"] is not None else 0, 
-                    "t": s["timestamp"].strftime("%H:%M:%S") if s["timestamp"] else ""
-                }
-                for s in samples if s["temperatura"] is not None and s["humedad"] is not None
-            ]
-
-        except Exception as e:
-            print(f"Error obteniendo nube de puntos: {e}")
-            report["nube_puntos"] = []
-
-        cursor.close()
-        conn.close()
-        return report
+        cursor.execute(query)
+        results = cursor.fetchall()
+        return [format_report_for_frontend(r) for r in results]
     except Exception as e:
-        print(f"Error crtico obteniendo reporte: {e}")
-        if 'conn' in locals() and conn: 
-            try: conn.close()
-            except: pass
-        return None
+        print(f"Error en get_reports_by_range: {e}")
+        return []
+    finally:
+        if conn: conn.close()
+
 
 # ==================== MQTT LOGGER ====================
 
@@ -806,10 +841,21 @@ TU ROL ES EXCLUSIVAMENTE:
 
 Responde SIEMPRE en JSON válido sin ningún texto adicional.'''
 
-    # Crear copia limpia para el LLM sin la imagen base64
+    # Crear copia limpia para el LLM sin la imagen base64 ni datos interactivos
     llm_analysis_data = backend_analysis.copy()
     if "scatter_plot_img" in llm_analysis_data:
         del llm_analysis_data["scatter_plot_img"]
+    if "plotly_scatter_data" in llm_analysis_data:
+        del llm_analysis_data["plotly_scatter_data"]
+    
+    # Limitar anomalías a 10 por variable para no saturar al LLM
+    if "variables" in llm_analysis_data:
+        for var_name, var_stats in llm_analysis_data["variables"].items():
+            if var_stats and "anomalies" in var_stats:
+                var_stats["anomalies"] = var_stats["anomalies"][:10]
+                
+    if "hourly_trends" in llm_analysis_data:
+        del llm_analysis_data["hourly_trends"]
 
     user_prompt = f'''Analiza los siguientes resultados técnicos obtenidos por nuestra red de sensores meteorológicos:
 
@@ -1133,12 +1179,14 @@ def handle_generate_report():
 def handle_latest_report():
     report = get_latest_report()
     if report:
-        if 'created_at' in report and report['created_at']:
-            report['created_at'] = report['created_at'].isoformat() if hasattr(report['created_at'], 'isoformat') else str(report['created_at'])
-        if 'fecha' in report and report['fecha']:
-            report['fecha'] = str(report['fecha'])
         return jsonify(report)
     return jsonify({"error": "No hay reportes disponibles."}), 404
+
+@app.route('/api/reports', methods=['GET'])
+def handle_get_reports():
+    days = request.args.get('days', '7')
+    reports = get_reports_by_range(days)
+    return jsonify(reports)
 
 @app.route('/api/admin/db-info', methods=['GET'])
 def get_db_info():
@@ -1340,7 +1388,7 @@ def push_seismic_alert():
     
     payload = json.dumps({
         "title": "ALERTA SISMICA",
-        "body": f"Vibración detectada: {magnitude:.3f} Hz\nRevise condiciones en el área.",
+        "body": f"Vibración detectada: {magnitude:.3f} g\nRevise condiciones en el área.",
         "icon": "/images/alert_noti.png",
         "badge": "/images/icon.png",
         "tag": "seismic-alert",

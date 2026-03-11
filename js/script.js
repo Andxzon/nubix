@@ -8,7 +8,7 @@ const SENSORS = [
   { id: 'humChart',   label: 'Humedad',        unit: '%',    suggestedMin: 0,   suggestedMax: 85,   color: 'rgba(75,192,192,0.95)' },
   { id: 'soilChart',  label: 'Humedad suelo',  unit: '%',    suggestedMin: 0,   suggestedMax: 100,  color: 'rgba(153,102,255,0.95)' },
   { id: 'lightChart', label: 'Luz',            unit: 'lux',  suggestedMin: 0,   suggestedMax: 5000, color: 'rgba(255,206,86,0.95)' },
-  { id: 'vibrChart',  label: 'Vibración',      unit: 'Hz',   suggestedMin: 0,   suggestedMax: 2,    color: 'rgba(255, 159, 64, 0.95)' }
+  { id: 'vibrChart',  label: 'Vibración',      unit: 'g',   suggestedMin: 0,   suggestedMax: 2,    color: 'rgba(255, 159, 64, 0.95)' }
 ];
 
 const charts = {};
