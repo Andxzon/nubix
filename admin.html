@@ -6,11 +6,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/png" href="images/icon.png">
     <title>Panel de Administración - MeteoIoT</title>
+    <script src="js/auth_guard.js"></script>
     <script>
-        const userStr = localStorage.getItem('user');
-        if (!userStr || JSON.parse(userStr).username !== 'admin') {
-            window.location.href = 'index.html';
-        }
+        // Bloqueo específico para el panel de administración
+        document.addEventListener('userLoaded', (e) => {
+            const user = e.detail;
+            if (!user || user.username !== 'admin') {
+                console.warn('Acceso denegado: Se requiere rol de administrador.');
+                window.location.href = 'index.html';
+            }
+        });
     </script>
     <link rel="stylesheet" href="css/style.css">
     <style>
@@ -269,7 +274,6 @@
         </div>
     </div>
 
-    <script src="js/auth_guard.js"></script>
     <script>
         let currentDb = '';
         let currentTable = '';

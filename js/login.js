@@ -1,128 +1,131 @@
 
 // ============================================================
-//  MeteoIoT — Login con Cloudflare Turnstile + Cookie Session
+//  MeteoIoT — Login con 2FA e integración Turnstile
 // ============================================================
 
-// ── Callbacks globales de Turnstile (deben estar en window scope) ────────────
+let currentTurnstileToken = null;
+let pendingUserId = null;
 
-window.onTurnstileVerified = function (token) {
-    // Cloudflare aprobó al usuario → habilitar botón
+// --- Callbacks de Cloudflare Turnstile ---
+window.onTurnstileVerified = function(token) {
+    currentTurnstileToken = token;
     const btn = document.getElementById('login-submit-btn');
-    if (btn) {
-        btn.disabled = false;
-        btn.classList.add('turnstile-ok');
-    }
+    btn.disabled = false;
+    btn.classList.add('turnstile-ok');
 };
 
-window.onTurnstileExpired = function () {
-    // El token caducó (tokens duran ~5 min) → volver a bloquear
+window.onTurnstileExpired = function() {
+    currentTurnstileToken = null;
     const btn = document.getElementById('login-submit-btn');
-    if (btn) {
-        btn.disabled = true;
-        btn.classList.remove('turnstile-ok');
-    }
+    btn.disabled = true;
+    btn.classList.remove('turnstile-ok');
 };
 
-window.onTurnstileError = function () {
-    // Error en el widget (sin red, etc.) → bloquear
+window.onTurnstileError = function() {
+    currentTurnstileToken = null;
     const btn = document.getElementById('login-submit-btn');
-    if (btn) {
-        btn.disabled = true;
-        btn.classList.remove('turnstile-ok');
-    }
+    btn.disabled = true;
+    btn.classList.remove('turnstile-ok');
 };
-
-// ── Lógica del formulario ─────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
+    const loginForm = document.querySelector('.login-form');
+    const credsSection = document.getElementById('credentials-section');
+    const tfaSection = document.getElementById('2fa-section');
+    const verify2faBtn = document.getElementById('verify-2fa-btn');
 
-    // Verificar sesión existente vía API (no localStorage)
+    // Al cargar la página, verificar si ya está autenticado
     fetch('/api/me', { credentials: 'include' })
-        .then(res => { if (res.ok) window.location.href = 'index.html'; })
-        .catch(() => { /* no hay sesión activa, mostramos login */ });
+        .then(res => { if (res.ok) window.location.href = 'index.html'; });
 
-    const loginForm  = document.querySelector('.login-form');
-    const loginBtn   = document.getElementById('login-submit-btn');
-    const userInput  = document.querySelector('input[type="text"]');
-    const passInput  = document.querySelector('input[type="password"]');
-
-    if (!loginForm) return;
-
+    // PASO 1: Enviar Usuario y Contraseña + Turnstile
     loginForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+        
+        const username = document.getElementById('username').value;
+        const password = document.getElementById('password').value;
+        const submitBtn = document.getElementById('login-submit-btn');
 
-        const username = userInput.value.trim();
-        const password = passInput.value;
-
-        if (!username || !password) {
-            showError('Por favor ingresa usuario y contraseña');
+        if (!currentTurnstileToken) {
+            alert('Por favor, completa la verificación de seguridad.');
             return;
         }
 
-        // Obtener token del input hidden que inyecta el widget de Turnstile
-        const turnstileToken = document.querySelector('[name="cf-turnstile-response"]')?.value;
-
-        if (!turnstileToken) {
-            showError('Por favor completa la verificación de seguridad');
-            return;
-        }
-
-        setLoading(true);
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Verificando...';
 
         try {
             const response = await fetch('/api/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',          // ← necesario para recibir la cookie
-                body: JSON.stringify({ username, password, turnstile_token: turnstileToken })
+                body: JSON.stringify({ 
+                    username, 
+                    password, 
+                    turnstile_token: currentTurnstileToken 
+                })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.requires_2fa) {
+                // Éxito parcial: ocultar login y mostrar campo 2FA
+                pendingUserId = data.user_id;
+                document.getElementById('masked-email').textContent = data.email_masked;
+                
+                credsSection.style.display = 'none';
+                tfaSection.style.display = 'block';
+                document.querySelector('.login-title').textContent = 'Paso de Seguridad';
+            } else if (!response.ok) {
+                alert(data.error || 'Error en el inicio de sesión');
+                // Resetear Turnstile en caso de error para que el usuario pueda reintentar
+                if (typeof turnstile !== 'undefined') turnstile.reset();
+                submitBtn.textContent = 'Acceder';
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            alert('Error de conexión con el servidor.');
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Acceder';
+        }
+    });
+
+    // PASO 2: Verificar código 2FA
+    verify2faBtn.addEventListener('click', async () => {
+        const code = document.getElementById('2fa-code').value.trim();
+
+        if (code.length < 6) {
+            alert('El código debe tener 6 dígitos.');
+            return;
+        }
+
+        verify2faBtn.disabled = true;
+        verify2faBtn.textContent = 'Comprobando...';
+
+        try {
+            const response = await fetch('/api/verify-2fa', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    user_id: pendingUserId, 
+                    code: code 
+                })
             });
 
             const data = await response.json();
 
             if (response.ok) {
-                // ✅ La sesión se guarda en cookie HttpOnly (el backend la setea)
-                // No guardamos nada en localStorage
+                // Éxito completo: redirigir
                 window.location.href = 'index.html';
             } else {
-                showError(data.error || 'Credenciales inválidas');
-                setLoading(false);
-                resetTurnstile();
+                alert(data.error || 'Código incorrecto');
+                verify2faBtn.disabled = false;
+                verify2faBtn.textContent = 'Verificar Código';
             }
-        } catch (err) {
-            console.error('Error de conexión:', err);
-            showError('Error de conexión con el servidor');
-            setLoading(false);
-            resetTurnstile();
+        } catch (error) {
+            console.error('Error:', error);
+            alert('Error al verificar el código.');
+            verify2faBtn.disabled = false;
+            verify2faBtn.textContent = 'Verificar Código';
         }
     });
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
-    function setLoading(on) {
-        loginBtn.textContent = on ? 'Verificando...' : 'Acceder';
-        loginBtn.disabled    = on;
-    }
-
-    function showError(msg) {
-        // Eliminar error previo si existe
-        document.querySelector('.login-error-msg')?.remove();
-
-        const p = document.createElement('p');
-        p.className   = 'login-error-msg';
-        p.textContent = msg;
-        p.style.cssText = 'color:#ff6b6b;font-size:.85rem;text-align:center;margin:.5rem 0 0;';
-        loginBtn.insertAdjacentElement('afterend', p);
-
-        // Auto-eliminar a los 5 segundos
-        setTimeout(() => p.remove(), 5000);
-    }
-
-    function resetTurnstile() {
-        if (window.turnstile) {
-            window.turnstile.reset('#cf-turnstile-widget');
-            // Al resetear, el botón vuelve a quedar deshabilitado hasta nueva verificación
-            loginBtn.disabled = true;
-            loginBtn.classList.remove('turnstile-ok');
-        }
-    }
 });

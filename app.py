@@ -70,9 +70,11 @@ SESSION_DURATION_HOURS = 8
 SESSION_COOKIE_NAME    = 'miot_sid'
 IS_PRODUCTION = os.getenv('RENDER', '') != '' or os.getenv('FLASK_ENV', '') == 'production'
 
-# Rate limiting: intentos fallidos antes de bloqueo y duración del bloqueo
-MAX_FAILED_ATTEMPTS = 3
-LOCKOUT_MINUTES     = 5
+# Configuración de 2FA y Resend
+RESEND_API_KEY      = os.getenv('RESEND_API_KEY', 're_tu_key_aqui')
+RESEND_FROM_EMAIL   = os.getenv('RESEND_FROM_EMAIL', 'onboarding@resend.dev')
+OTP_EXPIRY_MINUTES  = 10
+OTP_MAX_ATTEMPTS    = 3
 
 # Almacén en memoria de suscripciones push (en producción usa base de datos)
 push_subscriptions = {}
@@ -283,6 +285,20 @@ def init_auth_database():
             )
         ''')
 
+        # Tabla de códigos de verificación (2FA)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS verification_codes (
+                id           INT AUTO_INCREMENT PRIMARY KEY,
+                user_id      INT NOT NULL,
+                code         VARCHAR(6) NOT NULL,
+                expires_at   DATETIME NOT NULL,
+                attempts     INT DEFAULT 0,
+                used         BOOLEAN DEFAULT FALSE,
+                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_user_active (user_id, used, expires_at)
+            )
+        ''')
+
         conn.commit()
         cursor.close()
         conn.close()
@@ -292,6 +308,63 @@ def init_auth_database():
         print(f"Error inicializando tablas de seguridad: {e}")
         return False
 
+
+# ==================== UTILIDADES DE CORREO (RESEND) ====================
+
+def send_2fa_email(to_email, username, code):
+    """Envía el código 2FA usando la API de Resend."""
+    if not RESEND_API_KEY or RESEND_API_KEY == 're_tu_key_aqui':
+        print(f"[2FA] WARN: RESEND_API_KEY no configurada. Código para {username}: {code}")
+        return True # Simular éxito en desarrollo si no hay key
+
+    url = "https://api.resend.com/emails"
+    # NOTA: En la capa gratuita, el 'from' debe ser exactamente 'onboarding@resend.dev' 
+    # y el 'to' debe ser el correo con el que te registraste en Resend.
+    payload = {
+        "from": RESEND_FROM_EMAIL, 
+        "to": [to_email],
+        "subject": f"{code} es tu código de verificación MeteoIoT",
+        "html": f"""
+            <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; padding: 30px;">
+                <h2 style="color: #1e293b; margin-top: 0;">Verificación de Inicio de Sesión</h2>
+                <p style="color: #64748b;">Hola <strong>{username}</strong>,</p>
+                <p style="color: #64748b;">Has intentado iniciar sesión en MeteoIoT. Usa el siguiente código para completar el proceso:</p>
+                <div style="background: #f8fafc; border-radius: 8px; padding: 20px; text-align: center; margin: 25px 0;">
+                    <span style="font-size: 32px; font-weight: 800; letter-spacing: 5px; color: #3b82f6;">{code}</span>
+                </div>
+                <p style="color: #94a3b8; font-size: 13px;">Este código expirará en {OTP_EXPIRY_MINUTES} minutos. Si no has solicitado esto, ignora este correo.</p>
+                <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 25px 0;">
+                <p style="color: #cbd5e1; font-size: 11px; text-align: center;">MeteoIoT Station &copy; 2026</p>
+            </div>
+        """
+    }
+    
+    try:
+        req = urllib.request.Request(
+            url, 
+            data=json.dumps(payload).encode('utf-8'),
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+                "User-Agent": "MeteoIoT/1.0"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            print(f"[2FA] Email enviado con éxito a {to_email}. ID: {data.get('id')}")
+            return True
+    except Exception as e:
+        # Intentar leer el cuerpo del error para diagnóstico
+        error_msg = str(e)
+        if hasattr(e, 'read'):
+            try:
+                error_body = e.read().decode('utf-8')
+                error_msg = f"{e} - Body: {error_body}"
+            except:
+                pass
+        print(f"[2FA] Error enviando email: {error_msg}")
+        return False
 
 # ==================== GEO-IP ====================
 
@@ -1490,7 +1563,6 @@ def login():
     password        = data.get('password', '')
     turnstile_token = data.get('turnstile_token', '')
     client_ip       = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
-    user_agent      = request.headers.get('User-Agent', '')
 
     if not username or not password:
         return jsonify({'error': 'Faltan credenciales'}), 400
@@ -1499,17 +1571,13 @@ def login():
     if not turnstile_token:
         return jsonify({'error': 'Se requiere completar la verificación de seguridad'}), 400
     if not verify_turnstile_token(turnstile_token, client_ip):
-        return jsonify({'error': 'Verificación de seguridad fallida. Recarga la página e intenta de nuevo.'}), 403
+        return jsonify({'error': 'Verificación de seguridad fallida.'}), 403
 
     # ── Rate Limiting ─────────────────────────────────────────────────
     blocked, remaining = check_rate_limit(client_ip, username)
     if blocked:
-        mins = remaining // 60
-        secs = remaining % 60
-        msg  = f'Demasiados intentos fallidos. Intenta de nuevo en {mins}m {secs}s.'
-        return jsonify({'error': msg, 'locked': True, 'retry_after': remaining}), 429
+        return jsonify({'error': f'Demasiados intentos. Espera {remaining // 60}m.'}), 429
 
-    # ── Verificar credenciales en BD ─────────────────────────────────────────
     conn = get_auth_connection()
     if not conn:
         return jsonify({'error': 'Error de base de datos'}), 500
@@ -1518,49 +1586,107 @@ def login():
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT * FROM users WHERE username = %s OR email = %s", (username, username))
         user = cursor.fetchone()
-        cursor.close()
-        conn.close()
 
-        if not user:
+        if not user or not check_password_hash(user.get('password') or user.get('password_hash'), password):
             record_failed_attempt(client_ip, username)
             return jsonify({'error': 'Credenciales inválidas'}), 401
 
-        db_password = user.get('password') or user.get('password_hash')
-        if not db_password:
-            return jsonify({'error': 'Error en datos de usuario'}), 500
+        # ── Password correcto: Generar OTP para 2FA ──────────────────────────
+        otp_code = ''.join([str(secrets.randbelow(10)) for _ in range(6)])
+        expires_at = datetime.now() + timedelta(minutes=OTP_EXPIRY_MINUTES)
+        
+        # Eliminar códigos previos no usados
+        cursor.execute("UPDATE verification_codes SET used = TRUE WHERE user_id = %s AND used = FALSE", (user['id'],))
+        
+        # Guardar nuevo código
+        cursor.execute('''
+            INSERT INTO verification_codes (user_id, code, expires_at)
+            VALUES (%s, %s, %s)
+        ''', (user['id'], otp_code, expires_at))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
 
-        if not check_password_hash(db_password, password):
-            record_failed_attempt(client_ip, username)
-            # Calcular intentos restantes
-            blocked2, _ = check_rate_limit(client_ip, username)
-            remaining_attempts = MAX_FAILED_ATTEMPTS - (MAX_FAILED_ATTEMPTS if blocked2 else 1)
-            extra = '' if blocked2 else f' (te quedan {MAX_FAILED_ATTEMPTS - 1} intentos)'
-            return jsonify({'error': f'Credenciales inválidas{extra}'}), 401
+        # Enviar email (REDIRIGIDO: Resend Free solo permite enviar al correo de registro)
+        target_email = "esliferi610@gmail.com"
+        email_sent = send_2fa_email(target_email, user['username'], otp_code)
+        
+        # SIEMPRE imprimir en consola para depuración
+        print(f"--- [DEBUG 2FA] Código generado para {user['username']}: {otp_code} ---")
+        
+        # Máscara para el frontend (mostramos el correo de destino real para evitar confusión)
+        masked = f"{target_email[:3]}***@{target_email.split('@')[-1]}"
+        
+        return jsonify({
+            'message': 'Código enviado',
+            'requires_2fa': True,
+            'user_id': user['id'],
+            'email_masked': masked
+        })
 
-        # ── Éxito: crear sesión en BD ────────────────────────────────────────
-        user_data = {
-            'id':       user['id'],
-            'username': user['username'],
-            'email':    user.get('email'),
-        }
-        session_token = db_create_session(user_data, client_ip, user_agent)
-        if not session_token:
-            return jsonify({'error': 'No se pudo crear la sesión. Intenta de nuevo.'}), 500
+    except Exception as e:
+        print(f'[LOGIN] Error: {e}')
+        return jsonify({'error': 'Error de servidor'}), 500
 
-        clear_failed_attempts(client_ip, username)   # resetear contador de intentos
 
-        # Actualizar last_login
-        conn2 = get_auth_connection()
-        if conn2:
-            try:
-                cur2 = conn2.cursor()
-                cur2.execute("UPDATE users SET last_login = %s WHERE id = %s", (datetime.now(), user['id']))
-                conn2.commit()
-                cur2.close()
-            finally:
-                conn2.close()
+@app.route('/api/verify-2fa', methods=['POST'])
+def verify_2fa():
+    """Verifica el código OTP y crea la sesión final."""
+    data      = request.json or {}
+    user_id   = data.get('user_id')
+    code      = data.get('code', '').strip()
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+    user_agent = request.headers.get('User-Agent', '')
 
-        resp = make_response(jsonify({'message': 'Login exitoso', 'user': user_data}))
+    if not user_id or not code:
+        return jsonify({'error': 'Datos incompletos'}), 400
+
+    conn = get_auth_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        now_python = datetime.now()
+        print(f"[2FA-VERIFY] Intentando verificar: user_id={user_id}, code={code}")
+        
+        # Buscar código válido
+        cursor.execute('''
+            SELECT * FROM verification_codes 
+            WHERE user_id = %s AND used = FALSE AND expires_at > %s
+            ORDER BY created_at DESC LIMIT 1
+        ''', (user_id, now_python))
+        record = cursor.fetchone()
+
+        if not record:
+            # Diagnóstico profundo
+            cursor.execute("SELECT * FROM verification_codes WHERE user_id = %s ORDER BY created_at DESC LIMIT 1", (user_id,))
+            last = cursor.fetchone()
+            print(f"[2FA-VERIFY] FALLO: No hay código activo. Último en BD: {last}")
+            return jsonify({'error': 'Código expirado o no solicitado. Intenta login de nuevo.'}), 401
+
+        # Comparar limpiando posibles espacios o diferencias de tipo
+        if str(record['code']).strip() != str(code).strip():
+            print(f"[2FA-VERIFY] FALLO: Código no coincide. BD: '{record['code']}' vs Recibido: '{code}'")
+            cursor.execute("UPDATE verification_codes SET attempts = attempts + 1 WHERE id = %s", (record['id'],))
+            conn.commit()
+            return jsonify({'error': 'Código incorrecto'}), 401
+
+        # ── ÉXITO: Marcar como usado y crear sesión ───────────────────────────
+        cursor.execute("UPDATE verification_codes SET used = TRUE WHERE id = %s", (record['id'],))
+        
+        cursor.execute("SELECT id, username, email FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+        
+        # Eliminar intentos fallidos de login (rate limit) ya que entró
+        clear_failed_attempts(client_ip, user['username'])
+        
+        # Crear la sesión real en BD
+        session_token = db_create_session(user, client_ip, user_agent)
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        resp = make_response(jsonify({'message': 'Acceso concedido', 'user': user}))
         resp.set_cookie(
             SESSION_COOKIE_NAME, session_token,
             httponly = True,
@@ -1571,15 +1697,13 @@ def login():
         )
         return resp
 
-    except Error as e:
-        print(f'[LOGIN] Error: {e}')
-        try: conn.close()
-        except: pass
-        return jsonify({'error': 'Error de servidor'}), 500
+    except Exception as e:
+        print(f'[2FA-VERIFY] Error: {e}')
+        return jsonify({'error': 'Error interno'}), 500
 
 
 @app.route('/api/me', methods=['GET'])
-def api_me():
+def get_me():
     """Valida la cookie de sesión contra la BD y verifica IP/país."""
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
