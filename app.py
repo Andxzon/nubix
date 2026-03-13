@@ -7,10 +7,11 @@ import ssl
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+import secrets
 import openai
 import paho.mqtt.client as mqtt
 import urllib.request
-from flask import Flask, jsonify, send_from_directory, send_file, request
+from flask import Flask, jsonify, send_from_directory, send_file, request, make_response
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from dotenv import load_dotenv
@@ -62,7 +63,16 @@ VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '')
 VAPID_CLAIMS = {"sub": "mailto:admin@example.com"}
 
 # Cloudflare Turnstile
-TURNSTILE_SECRET_KEY = os.getenv('TURNSTILE_SECRET_KEY', '1x0000000000000000000000000000000AA')  # Clave de prueba por defecto
+TURNSTILE_SECRET_KEY = os.getenv('TURNSTILE_SECRET_KEY', '1x0000000000000000000000000000000AA')
+
+# Configuración de sesiones
+SESSION_DURATION_HOURS = 8
+SESSION_COOKIE_NAME    = 'miot_sid'
+IS_PRODUCTION = os.getenv('RENDER', '') != '' or os.getenv('FLASK_ENV', '') == 'production'
+
+# Rate limiting: intentos fallidos antes de bloqueo y duración del bloqueo
+MAX_FAILED_ATTEMPTS = 3
+LOCKOUT_MINUTES     = 5
 
 # Almacén en memoria de suscripciones push (en producción usa base de datos)
 push_subscriptions = {}
@@ -102,6 +112,9 @@ def get_auth_connection():
         return None
 
 def init_database():
+    # Inicializar tablas de seguridad (sesiones y rate limit)
+    init_auth_database()
+    
     try:
         config_without_db = {k: v for k, v in DB_CONFIG.items() if k != 'database'}
         conn = mysql.connector.connect(**config_without_db)
@@ -224,6 +237,329 @@ def init_database():
     except Error as e:
         print(f"Error inicializando base de datos: {e}")
         return False
+
+def init_auth_database():
+    """
+    Inicializa las tablas de seguridad en la base de datos de autenticación:
+      - sessions:       sesiones persistentes con IP y país
+      - login_attempts: rate limiting por IP y usuario
+    """
+    conn = get_auth_connection()
+    if not conn:
+        print("No se pudo conectar a la BD de auth para inicializar tablas de seguridad")
+        return False
+    try:
+        cursor = conn.cursor()
+
+        # Tabla de sesiones activas
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sessions (
+                token        VARCHAR(128)  NOT NULL PRIMARY KEY,
+                user_id      INT           NOT NULL,
+                username     VARCHAR(100)  NOT NULL,
+                email        VARCHAR(255),
+                ip_address   VARCHAR(45)   NOT NULL,
+                country_code VARCHAR(3),
+                country_name VARCHAR(100),
+                user_agent   VARCHAR(512),
+                created_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at   DATETIME      NOT NULL,
+                INDEX idx_user_id  (user_id),
+                INDEX idx_expires  (expires_at)
+            )
+        ''')
+
+        # Tabla de intentos fallidos (rate limiting)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                id              INT AUTO_INCREMENT PRIMARY KEY,
+                ip_address      VARCHAR(45)  NOT NULL,
+                username        VARCHAR(100) NOT NULL,
+                failed_count    INT          NOT NULL DEFAULT 0,
+                last_attempt_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                locked_until    DATETIME,
+                INDEX idx_ip_user (ip_address, username),
+                INDEX idx_locked  (locked_until)
+            )
+        ''')
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("Tablas de seguridad (sessions, login_attempts) inicializadas correctamente")
+        return True
+    except Error as e:
+        print(f"Error inicializando tablas de seguridad: {e}")
+        return False
+
+
+# ==================== GEO-IP ====================
+
+def get_ip_geo(ip: str) -> dict:
+    """
+    Obtiene el país e información geográfica de una IP usando ip-api.com (gratuito, sin clave).
+    Devuelve dict con country_code y country_name, o valores vacíos si falla.
+    IPs locales (127.x, 192.168.x, 10.x) retornan 'LOCAL'.
+    """
+    # IPs privadas/locales → marcar como LOCAL
+    import ipaddress
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        if ip_obj.is_private or ip_obj.is_loopback:
+            return {'country_code': 'LOCAL', 'country_name': 'Red local'}
+    except ValueError:
+        pass
+
+    try:
+        url = f'http://ip-api.com/json/{ip}?fields=status,country,countryCode'
+        req = urllib.request.Request(url, headers={'User-Agent': 'MeteoIoT/1.0'})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        if data.get('status') == 'success':
+            return {
+                'country_code': data.get('countryCode', 'XX'),
+                'country_name': data.get('country', 'Desconocido'),
+            }
+    except Exception as e:
+        print(f"[GeoIP] Error consultando ip-api.com para {ip}: {e}")
+
+    return {'country_code': 'XX', 'country_name': 'Desconocido'}
+
+
+# ==================== SESIONES EN BASE DE DATOS ====================
+
+def db_create_session(user: dict, ip: str, user_agent: str) -> str | None:
+    """Crea una sesión en la BD y devuelve el token seguro."""
+    conn = get_auth_connection()
+    if not conn:
+        return None
+    try:
+        geo          = get_ip_geo(ip)
+        token        = secrets.token_hex(32)
+        expires_at   = datetime.now(timezone.utc) + timedelta(hours=SESSION_DURATION_HOURS)
+        expires_at_naive = expires_at.replace(tzinfo=None)  # MySQL no zone-aware por defecto
+
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO sessions
+              (token, user_id, username, email, ip_address,
+               country_code, country_name, user_agent, expires_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (
+            token,
+            user['id'],
+            user['username'],
+            user.get('email'),
+            ip,
+            geo['country_code'],
+            geo['country_name'],
+            user_agent[:512] if user_agent else None,
+            expires_at_naive
+        ))
+        conn.commit()
+        cursor.close()
+        print(f"[SESSION] Creada para '{user['username']}' — IP: {ip} — País: {geo['country_name']}")
+        return token
+    except Error as e:
+        print(f"[SESSION] Error creando sesión: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def db_get_session(token: str, current_ip: str) -> dict | None:
+    """
+    Valida el token en la BD.
+    Comprueba:
+      1. Que el token exista y no haya expirado.
+      2. Que la IP coincida con la registrada en la sesión.
+      3. Que el país del token coincida con el país actual.
+    Devuelve los datos del usuario o None si falla alguna verificación.
+    """
+    conn = get_auth_connection()
+    if not conn:
+        return None
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('''
+            SELECT * FROM sessions
+            WHERE token = %s AND expires_at > NOW()
+        ''', (token,))
+        session = cursor.fetchone()
+        cursor.close()
+
+        if not session:
+            return None  # token inválido o expirado
+
+        stored_ip      = session['ip_address']
+        stored_country = session['country_code']
+
+        # ── Verificación de IP (exacta) ───────────────────────────────────
+        if current_ip != stored_ip:
+            current_geo     = get_ip_geo(current_ip)
+            stored_geo      = {'country_code': stored_country}
+
+            # Si el país cambió → rechazar la sesión (posible secuestro)
+            if current_geo['country_code'] not in ('LOCAL', 'XX') and \
+               stored_geo['country_code'] not in ('LOCAL', 'XX') and \
+               current_geo['country_code'] != stored_geo['country_code']:
+                print(f"[SECURITY] Sesión rechazada — cambio de país detectado "
+                      f"({stored_country} → {current_geo['country_code']}) "
+                      f"para usuario '{session['username']}'")
+                # Invalidar sesión comprometida
+                db_delete_session(token)
+                return None
+
+            # Cambio de IP dentro del mismo país → advertencia pero permitir
+            print(f"[SECURITY] Cambio de IP detectado para '{session['username']}': "
+                  f"{stored_ip} → {current_ip} (país: {stored_country})")
+
+        return {
+            'id':       session['user_id'],
+            'username': session['username'],
+            'email':    session['email'],
+        }
+    except Error as e:
+        print(f"[SESSION] Error validando sesión: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def db_delete_session(token: str):
+    """Elimina una sesión de la BD (logout o revocación por seguridad)."""
+    conn = get_auth_connection()
+    if not conn:
+        return
+    try:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM sessions WHERE token = %s', (token,))
+        conn.commit()
+        cursor.close()
+    except Error as e:
+        print(f"[SESSION] Error eliminando sesión: {e}")
+    finally:
+        conn.close()
+
+
+def db_cleanup_expired_sessions():
+    """Limpia sesiones expiradas. Llamar periódicamente (scheduler)."""
+    conn = get_auth_connection()
+    if not conn:
+        return
+    try:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM sessions WHERE expires_at <= NOW()')
+        deleted = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        if deleted:
+            print(f"[SESSION] {deleted} sesiones expiradas eliminadas")
+    except Error:
+        pass
+    finally:
+        conn.close()
+
+
+# ==================== RATE LIMITING ====================
+
+def check_rate_limit(ip: str, username: str) -> tuple[bool, int]:
+    """
+    Devuelve (bloqueado: bool, segundos_restantes: int).
+    Si blocked=True el login debe rechazarse sin verificar credenciales.
+    """
+    conn = get_auth_connection()
+    if not conn:
+        return False, 0  # si no hay BD, permitir (fail-open)
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('''
+            SELECT failed_count, locked_until
+            FROM   login_attempts
+            WHERE  ip_address = %s AND username = %s
+        ''', (ip, username.lower()))
+        row = cursor.fetchone()
+        cursor.close()
+
+        if not row:
+            return False, 0
+
+        locked_until = row['locked_until']
+        if locked_until:
+            now = datetime.now()
+            if isinstance(locked_until, datetime):
+                locked_until = locked_until.replace(tzinfo=None)
+            remaining = int((locked_until - now).total_seconds())
+            if remaining > 0:
+                return True, remaining  # ✔ bloqueado
+
+        return False, 0
+    except Error as e:
+        print(f"[RATELIMIT] Error en check_rate_limit: {e}")
+        return False, 0
+    finally:
+        conn.close()
+
+
+def record_failed_attempt(ip: str, username: str):
+    """Registra un intento fallido. Si supera MAX_FAILED_ATTEMPTS, bloquea."""
+    conn = get_auth_connection()
+    if not conn:
+        return
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('''
+            SELECT id, failed_count FROM login_attempts
+            WHERE ip_address = %s AND username = %s
+        ''', (ip, username.lower()))
+        row = cursor.fetchone()
+
+        now = datetime.now()
+        if row:
+            new_count = row['failed_count'] + 1
+            locked_until = None
+            if new_count >= MAX_FAILED_ATTEMPTS:
+                locked_until = now + timedelta(minutes=LOCKOUT_MINUTES)
+                print(f"[RATELIMIT] IP {ip} bloqueada por {LOCKOUT_MINUTES} min "
+                      f"(usuario: '{username}', intentos: {new_count})")
+            cursor.execute('''
+                UPDATE login_attempts
+                SET failed_count = %s, last_attempt_at = %s, locked_until = %s
+                WHERE id = %s
+            ''', (new_count, now, locked_until, row['id']))
+        else:
+            cursor.execute('''
+                INSERT INTO login_attempts
+                  (ip_address, username, failed_count, last_attempt_at)
+                VALUES (%s, %s, 1, %s)
+            ''', (ip, username.lower(), now))
+
+        conn.commit()
+        cursor.close()
+    except Error as e:
+        print(f"[RATELIMIT] Error registrando intento fallido: {e}")
+    finally:
+        conn.close()
+
+
+def clear_failed_attempts(ip: str, username: str):
+    """Limpia los intentos fallidos tras un login exitoso."""
+    conn = get_auth_connection()
+    if not conn:
+        return
+    try:
+        cursor = conn.cursor()
+        cursor.execute('''
+            DELETE FROM login_attempts
+            WHERE ip_address = %s AND username = %s
+        ''', (ip, username.lower()))
+        conn.commit()
+        cursor.close()
+    except Error:
+        pass
+    finally:
+        conn.close()
+
 
 def save_sensor_reading(timestamp, readings: dict):
     conn = get_connection()
@@ -1149,10 +1485,12 @@ def serve_sw():
 
 @app.route('/api/login', methods=['POST'])
 def login():
-    data = request.json
-    username = data.get('username')
-    password = data.get('password')
-    turnstile_token = data.get('turnstile_token')  # Token de Cloudflare Turnstile
+    data            = request.json or {}
+    username        = data.get('username', '').strip()
+    password        = data.get('password', '')
+    turnstile_token = data.get('turnstile_token', '')
+    client_ip       = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+    user_agent      = request.headers.get('User-Agent', '')
 
     if not username or not password:
         return jsonify({'error': 'Faltan credenciales'}), 400
@@ -1160,62 +1498,120 @@ def login():
     # ── Verificación Cloudflare Turnstile ──────────────────────────────────
     if not turnstile_token:
         return jsonify({'error': 'Se requiere completar la verificación de seguridad'}), 400
-
-    if not verify_turnstile_token(turnstile_token, request.remote_addr):
+    if not verify_turnstile_token(turnstile_token, client_ip):
         return jsonify({'error': 'Verificación de seguridad fallida. Recarga la página e intenta de nuevo.'}), 403
-    # ───────────────────────────────────────────────────────────────────────
 
+    # ── Rate Limiting ─────────────────────────────────────────────────
+    blocked, remaining = check_rate_limit(client_ip, username)
+    if blocked:
+        mins = remaining // 60
+        secs = remaining % 60
+        msg  = f'Demasiados intentos fallidos. Intenta de nuevo en {mins}m {secs}s.'
+        return jsonify({'error': msg, 'locked': True, 'retry_after': remaining}), 429
+
+    # ── Verificar credenciales en BD ─────────────────────────────────────────
     conn = get_auth_connection()
     if not conn:
         return jsonify({'error': 'Error de base de datos'}), 500
 
     try:
         cursor = conn.cursor(dictionary=True)
-        # Check users table (assuming columns: username, email, password)
-        # Try to find by username or email
         cursor.execute("SELECT * FROM users WHERE username = %s OR email = %s", (username, username))
         user = cursor.fetchone()
-        
-        # If not found in 'users', maybe try 'accounts' if table name is different?
-        # Assuming 'users' for now based on typical convention. 
-        # If user is None, we could try to list tables if we were debugging, but for prod code:
-        if not user:
-             # Fallback check if table is named differently? 
-             # No, standard practice is to fail. 
-             # However, given we are blindly coding, let's just use what we found.
-             cursor.close()
-             return jsonify({'error': 'Usuario no encontrado'}), 401
+        cursor.close()
+        conn.close()
 
-        # Verify password
-        # Assuming password column is named 'password' or 'password_hash'
+        if not user:
+            record_failed_attempt(client_ip, username)
+            return jsonify({'error': 'Credenciales inválidas'}), 401
+
         db_password = user.get('password') or user.get('password_hash')
-        
         if not db_password:
-             cursor.close()
-             return jsonify({'error': 'Error en datos de usuario'}), 500
-             
-        if check_password_hash(db_password, password):
-            # Update last_login
-            cursor.execute("UPDATE users SET last_login = %s WHERE id = %s", (datetime.now(), user['id']))
-            conn.commit()
-            
-            token = "dummy_token_123" # In production use JWT
-            cursor.close()
-            conn.close()
-            return jsonify({
-                'message': 'Login exitoso',
-                'token': token,
-                'user': {'username': user.get('username'), 'email': user.get('email')}
-            })
-        else:
-            cursor.close()
-            conn.close()
-            return jsonify({'error': 'Contraseña incorrecta'}), 401
+            return jsonify({'error': 'Error en datos de usuario'}), 500
+
+        if not check_password_hash(db_password, password):
+            record_failed_attempt(client_ip, username)
+            # Calcular intentos restantes
+            blocked2, _ = check_rate_limit(client_ip, username)
+            remaining_attempts = MAX_FAILED_ATTEMPTS - (MAX_FAILED_ATTEMPTS if blocked2 else 1)
+            extra = '' if blocked2 else f' (te quedan {MAX_FAILED_ATTEMPTS - 1} intentos)'
+            return jsonify({'error': f'Credenciales inválidas{extra}'}), 401
+
+        # ── Éxito: crear sesión en BD ────────────────────────────────────────
+        user_data = {
+            'id':       user['id'],
+            'username': user['username'],
+            'email':    user.get('email'),
+        }
+        session_token = db_create_session(user_data, client_ip, user_agent)
+        if not session_token:
+            return jsonify({'error': 'No se pudo crear la sesión. Intenta de nuevo.'}), 500
+
+        clear_failed_attempts(client_ip, username)   # resetear contador de intentos
+
+        # Actualizar last_login
+        conn2 = get_auth_connection()
+        if conn2:
+            try:
+                cur2 = conn2.cursor()
+                cur2.execute("UPDATE users SET last_login = %s WHERE id = %s", (datetime.now(), user['id']))
+                conn2.commit()
+                cur2.close()
+            finally:
+                conn2.close()
+
+        resp = make_response(jsonify({'message': 'Login exitoso', 'user': user_data}))
+        resp.set_cookie(
+            SESSION_COOKIE_NAME, session_token,
+            httponly = True,
+            secure   = IS_PRODUCTION,
+            samesite = 'Strict',
+            max_age  = SESSION_DURATION_HOURS * 3600,
+            path     = '/'
+        )
+        return resp
 
     except Error as e:
-        print(f"Error en login: {e}")
-        if conn: conn.close()
+        print(f'[LOGIN] Error: {e}')
+        try: conn.close()
+        except: pass
         return jsonify({'error': 'Error de servidor'}), 500
+
+
+@app.route('/api/me', methods=['GET'])
+def api_me():
+    """Valida la cookie de sesión contra la BD y verifica IP/país."""
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        return jsonify({'error': 'No autenticado'}), 401
+
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+    user_data = db_get_session(token, client_ip)
+
+    if not user_data:
+        # Token inválido, expirado o cambio de país → limpiar cookie
+        resp = make_response(jsonify({'error': 'Sesión inválida o expirada'}), 401)
+        resp.set_cookie(SESSION_COOKIE_NAME, '', max_age=0, path='/')
+        return resp
+
+    return jsonify({'user': user_data}), 200
+
+
+@app.route('/api/logout', methods=['POST'])
+def api_logout():
+    """Invalida la sesión en BD y borra la cookie."""
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if token:
+        db_delete_session(token)
+
+    resp = make_response(jsonify({'message': 'Sesión cerrada'}))
+    resp.set_cookie(
+        SESSION_COOKIE_NAME, '',
+        httponly=True, secure=IS_PRODUCTION, samesite='Strict',
+        max_age=0, path='/'
+    )
+    return resp
+
 
 @app.route('/manifest.json')
 def serve_manifest():

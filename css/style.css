@@ -848,10 +848,39 @@ canvas {
   box-shadow: 0 4px 15px rgba(37, 99, 235, 0.3);
 }
 
-.login-btn:hover {
+.login-btn:hover:not(:disabled) {
   transform: translateY(-2px);
   box-shadow: 0 8px 25px rgba(37, 99, 235, 0.5);
   background: linear-gradient(135deg, #60a5fa, #3b82f6);
+}
+
+/* Estado deshabilitado: Turnstile aún no verificó */
+.login-btn:disabled {
+  background: linear-gradient(135deg, #374151, #1f2937);
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Estado habilitado tras verificación de Turnstile */
+.login-btn.turnstile-ok {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  opacity: 1;
+  cursor: pointer;
+  animation: pulseGlow 1.5s ease-out;
+}
+
+@keyframes pulseGlow {
+  0%   { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.5); }
+  70%  { box-shadow: 0 0 0 10px rgba(59, 130, 246, 0); }
+  100% { box-shadow: 0 4px 15px rgba(37, 99, 235, 0.3); }
+}
+
+/* Centrar widget de Turnstile */
+.cf-turnstile {
+  display: flex;
+  justify-content: center;
 }
 
 .login-extra-links {

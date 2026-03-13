@@ -34,9 +34,12 @@
                      data-sitekey="0x4AAAAAACqAKDmtesf1K9sl"
                      data-theme="dark"
                      data-language="es"
+                     data-callback="onTurnstileVerified"
+                     data-expired-callback="onTurnstileExpired"
+                     data-error-callback="onTurnstileError"
                      id="cf-turnstile-widget"></div>
 
-                <button type="submit" class="login-btn">Acceder</button>
+                <button type="submit" class="login-btn" id="login-submit-btn" disabled>Acceder</button>
             </form>
 
             <div class="login-extra-links">
