@@ -9,6 +9,7 @@ from pathlib import Path
 
 import openai
 import paho.mqtt.client as mqtt
+import urllib.request
 from flask import Flask, jsonify, send_from_directory, send_file, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
@@ -59,6 +60,9 @@ MQTT_PASSWORD = os.getenv('MQTT_PASSWORD')
 VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY', '')
 VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '')
 VAPID_CLAIMS = {"sub": "mailto:admin@example.com"}
+
+# Cloudflare Turnstile
+TURNSTILE_SECRET_KEY = os.getenv('TURNSTILE_SECRET_KEY', '1x0000000000000000000000000000000AA')  # Clave de prueba por defecto
 
 # Almacén en memoria de suscripciones push (en producción usa base de datos)
 push_subscriptions = {}
@@ -1058,6 +1062,53 @@ def run_scheduler():
         
         time.sleep(30)
 
+# ==================== CLOUDFLARE TURNSTILE ====================
+
+def verify_turnstile_token(token: str, remote_ip: str = None) -> bool:
+    """
+    Verifica el token de Cloudflare Turnstile contra la API de Cloudflare.
+    
+    Args:
+        token: Token generado por el widget de Turnstile en el frontend
+        remote_ip: IP del cliente (opcional, mejora la seguridad)
+    
+    Returns:
+        True si el token es válido, False en caso contrario
+    """
+    try:
+        payload = f"secret={TURNSTILE_SECRET_KEY}&response={token}"
+        if remote_ip:
+            payload += f"&remoteip={remote_ip}"
+        
+        payload_bytes = payload.encode('utf-8')
+        
+        req = urllib.request.Request(
+            'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+            data=payload_bytes,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            method='POST'
+        )
+        
+        with urllib.request.urlopen(req, timeout=5) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            
+        success = result.get('success', False)
+        if not success:
+            error_codes = result.get('error-codes', [])
+            print(f"Turnstile verificación fallida. Códigos de error: {error_codes}")
+        else:
+            print(f"Turnstile verificación exitosa para IP: {remote_ip}")
+            
+        return success
+        
+    except Exception as e:
+        print(f"Error al verificar Turnstile token: {e}")
+        # En caso de error de red con la API de Cloudflare, decidir si bloquear o permitir
+        # Para producción: return False (más seguro)
+        # Para desarrollo/fallback: return True (más permisivo)
+        return False  # Bloqueamos si no podemos verificar
+
+
 # ==================== FLASK ROUTES ====================
 
 @app.route('/')
@@ -1101,9 +1152,18 @@ def login():
     data = request.json
     username = data.get('username')
     password = data.get('password')
+    turnstile_token = data.get('turnstile_token')  # Token de Cloudflare Turnstile
 
     if not username or not password:
         return jsonify({'error': 'Faltan credenciales'}), 400
+
+    # ── Verificación Cloudflare Turnstile ──────────────────────────────────
+    if not turnstile_token:
+        return jsonify({'error': 'Se requiere completar la verificación de seguridad'}), 400
+
+    if not verify_turnstile_token(turnstile_token, request.remote_addr):
+        return jsonify({'error': 'Verificación de seguridad fallida. Recarga la página e intenta de nuevo.'}), 403
+    # ───────────────────────────────────────────────────────────────────────
 
     conn = get_auth_connection()
     if not conn:

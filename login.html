@@ -9,6 +9,8 @@
     <meta name="theme-color" content="#16213e">
     <title>Iniciar Sesión - MeteoIoT</title>
     <link rel="stylesheet" href="css/style.css">
+    <!-- Cloudflare Turnstile -->
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 </head>
 
 <body>
@@ -26,6 +28,13 @@
                 <div class="input-group">
                     <input type="password" placeholder="Contraseña" class="login-input" required>
                 </div>
+
+                <!-- Widget de Cloudflare Turnstile -->
+                <div class="cf-turnstile" 
+                     data-sitekey="0x4AAAAAACqAKDmtesf1K9sl"
+                     data-theme="dark"
+                     data-language="es"
+                     id="cf-turnstile-widget"></div>
 
                 <button type="submit" class="login-btn">Acceder</button>
             </form>
