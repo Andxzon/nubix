@@ -4,6 +4,7 @@ import json
 import time
 import threading
 import ssl
+import hashlib
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -71,6 +72,8 @@ SESSION_COOKIE_NAME    = 'miot_sid'
 IS_PRODUCTION = os.getenv('RENDER', '') != '' or os.getenv('FLASK_ENV', '') == 'production'
 MAX_FAILED_ATTEMPTS = int(os.getenv('MAX_FAILED_ATTEMPTS', 5))
 LOCKOUT_MINUTES = int(os.getenv('LOCKOUT_MINUTES', 15))
+TRUSTED_DEVICE_COOKIE_NAME = 'miot_trusted'
+TRUSTED_DEVICE_DAYS = int(os.getenv('TRUSTED_DEVICE_DAYS', 30))
 
 # Configuración de 2FA y Resend
 RESEND_API_KEY      = os.getenv('RESEND_API_KEY', 're_tu_key_aqui')
@@ -305,6 +308,22 @@ def init_auth_database():
             )
         ''')
 
+        # Tabla de dispositivos recordados para omitir 2FA en navegadores confiables
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trusted_devices (
+                id           INT AUTO_INCREMENT PRIMARY KEY,
+                user_id      INT NOT NULL,
+                token_hash   VARCHAR(64) NOT NULL UNIQUE,
+                ip_address   VARCHAR(45),
+                user_agent   VARCHAR(512),
+                created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_used_at DATETIME,
+                expires_at   DATETIME NOT NULL,
+                INDEX idx_user_id (user_id),
+                INDEX idx_expires (expires_at)
+            )
+        ''')
+
         conn.commit()
         cursor.close()
         conn.close()
@@ -446,6 +465,85 @@ def db_create_session(user: dict, ip: str, user_agent: str) -> str | None:
         conn.close()
 
 
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+def db_create_trusted_device(user_id: int, ip: str, user_agent: str) -> str | None:
+    """Registra este navegador como confiable y devuelve el token para la cookie."""
+    conn = get_auth_connection()
+    if not conn:
+        return None
+    try:
+        token = secrets.token_urlsafe(48)
+        token_hash = hash_token(token)
+        expires_at = datetime.now(timezone.utc) + timedelta(days=TRUSTED_DEVICE_DAYS)
+        expires_at_naive = expires_at.replace(tzinfo=None)
+
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO trusted_devices
+              (user_id, token_hash, ip_address, user_agent, expires_at)
+            VALUES (%s, %s, %s, %s, %s)
+        ''', (
+            user_id,
+            token_hash,
+            ip,
+            user_agent[:512] if user_agent else None,
+            expires_at_naive
+        ))
+        conn.commit()
+        cursor.close()
+        return token
+    except Error as e:
+        print(f"[TRUSTED] Error guardando dispositivo confiable: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def db_validate_trusted_device(token: str, user_id: int, user_agent: str) -> bool:
+    """Verifica si la cookie de dispositivo confiable pertenece al usuario actual."""
+    if not token:
+        return False
+
+    conn = get_auth_connection()
+    if not conn:
+        return False
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('''
+            SELECT id, user_agent
+            FROM trusted_devices
+            WHERE user_id = %s AND token_hash = %s AND expires_at > NOW()
+        ''', (user_id, hash_token(token)))
+        device = cursor.fetchone()
+
+        if not device:
+            cursor.close()
+            return False
+
+        stored_agent = device.get('user_agent') or ''
+        current_agent = (user_agent or '')[:512]
+        if stored_agent and stored_agent != current_agent:
+            cursor.close()
+            print(f"[TRUSTED] Rechazado por cambio de navegador para user_id={user_id}")
+            return False
+
+        cursor.execute(
+            "UPDATE trusted_devices SET last_used_at = %s WHERE id = %s",
+            (datetime.now(), device['id'])
+        )
+        conn.commit()
+        cursor.close()
+        return True
+    except Error as e:
+        print(f"[TRUSTED] Error validando dispositivo confiable: {e}")
+        return False
+    finally:
+        conn.close()
+
+
 def db_get_session(token: str, current_ip: str) -> dict | None:
     """
     Valida el token en la BD.
@@ -530,10 +628,14 @@ def db_cleanup_expired_sessions():
         cursor = conn.cursor()
         cursor.execute('DELETE FROM sessions WHERE expires_at <= NOW()')
         deleted = cursor.rowcount
+        cursor.execute('DELETE FROM trusted_devices WHERE expires_at <= NOW()')
+        trusted_deleted = cursor.rowcount
         conn.commit()
         cursor.close()
         if deleted:
             print(f"[SESSION] {deleted} sesiones expiradas eliminadas")
+        if trusted_deleted:
+            print(f"[TRUSTED] {trusted_deleted} dispositivos confiables expirados eliminados")
     except Error:
         pass
     finally:
@@ -1569,6 +1671,7 @@ def login():
     password        = data.get('password', '')
     turnstile_token = data.get('turnstile_token', '')
     client_ip       = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+    user_agent      = request.headers.get('User-Agent', '')
 
     if not username or not password:
         return jsonify({'error': 'Faltan credenciales'}), 400
@@ -1596,6 +1699,34 @@ def login():
         if not user or not check_password_hash(user.get('password') or user.get('password_hash'), password):
             record_failed_attempt(client_ip, username)
             return jsonify({'error': 'Credenciales inválidas'}), 401
+
+        trusted_token = request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME)
+        if db_validate_trusted_device(trusted_token, user['id'], user_agent):
+            cursor.close()
+            conn.close()
+
+            clear_failed_attempts(client_ip, user['username'])
+            session_token = db_create_session(user, client_ip, user_agent)
+
+            resp = make_response(jsonify({
+                'message': 'Acceso concedido',
+                'requires_2fa': False,
+                'trusted_device': True,
+                'user': {
+                    'id': user['id'],
+                    'username': user['username'],
+                    'email': user.get('email')
+                }
+            }))
+            resp.set_cookie(
+                SESSION_COOKIE_NAME, session_token,
+                httponly=True,
+                secure=IS_PRODUCTION,
+                samesite='Strict',
+                max_age=SESSION_DURATION_HOURS * 3600,
+                path='/'
+            )
+            return resp
 
         # ── Password correcto: Generar OTP para 2FA ──────────────────────────
         otp_code = ''.join([str(secrets.randbelow(10)) for _ in range(6)])
@@ -1687,6 +1818,7 @@ def verify_2fa():
         
         # Crear la sesión real en BD
         session_token = db_create_session(user, client_ip, user_agent)
+        trusted_token = db_create_trusted_device(user['id'], client_ip, user_agent)
         
         conn.commit()
         cursor.close()
@@ -1701,6 +1833,15 @@ def verify_2fa():
             max_age  = SESSION_DURATION_HOURS * 3600,
             path     = '/'
         )
+        if trusted_token:
+            resp.set_cookie(
+                TRUSTED_DEVICE_COOKIE_NAME, trusted_token,
+                httponly=True,
+                secure=IS_PRODUCTION,
+                samesite='Strict',
+                max_age=TRUSTED_DEVICE_DAYS * 24 * 3600,
+                path='/'
+            )
         return resp
 
     except Exception as e:
@@ -1773,6 +1914,22 @@ def handle_get_reports():
     days = request.args.get('days', '7')
     reports = get_reports_by_range(days)
     return jsonify(reports)
+
+def looks_like_password_hash(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    known_prefixes = ('scrypt:', 'pbkdf2:', 'sha256$', 'bcrypt$', '$2a$', '$2b$', '$2y$')
+    return value.startswith(known_prefixes)
+
+
+def normalize_password_updates(db: str, table: str, updates: dict):
+    if db != DB_AUTH_CONFIG['database'] or table != 'users':
+        return
+
+    for key in ('password', 'password_hash'):
+        value = updates.get(key)
+        if value and not looks_like_password_hash(value):
+            updates[key] = generate_password_hash(value)
 
 @app.route('/api/admin/db-info', methods=['GET'])
 def get_db_info():
@@ -1869,6 +2026,8 @@ def update_row():
 
     if not updates:
         return jsonify({'error': 'No hay cambios'}), 400
+    
+    normalize_password_updates(db, table, updates)
         
     # Basic validation
     if not all(x.replace('_', '').isalnum() for x in [db, table, pk_col] + list(updates.keys())):

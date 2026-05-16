@@ -33,6 +33,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const credsSection = document.getElementById('credentials-section');
     const tfaSection = document.getElementById('2fa-section');
     const verify2faBtn = document.getElementById('verify-2fa-btn');
+    const usernameInput = document.getElementById('username');
+    const passwordInput = document.getElementById('password');
+
+    const rememberedUsername = localStorage.getItem('miot_last_username');
+    if (rememberedUsername) {
+        usernameInput.value = rememberedUsername;
+        passwordInput.focus();
+    }
 
     // Al cargar la página, verificar si ya está autenticado
     fetch('/api/me', { credentials: 'include' })
@@ -42,9 +50,10 @@ document.addEventListener('DOMContentLoaded', () => {
     loginForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         
-        const username = document.getElementById('username').value;
-        const password = document.getElementById('password').value;
+        const username = usernameInput.value;
+        const password = passwordInput.value;
         const submitBtn = document.getElementById('login-submit-btn');
+        localStorage.setItem('miot_last_username', username);
 
         if (!currentTurnstileToken) {
             alert('Por favor, completa la verificación de seguridad.');
@@ -75,6 +84,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 credsSection.style.display = 'none';
                 tfaSection.style.display = 'block';
                 document.querySelector('.login-title').textContent = 'Paso de Seguridad';
+            } else if (response.ok && data.requires_2fa === false) {
+                window.location.href = 'index.html';
             } else if (!response.ok) {
                 alert(data.error || 'Error en el inicio de sesión');
                 // Resetear Turnstile en caso de error para que el usuario pueda reintentar
