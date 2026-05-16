@@ -69,6 +69,8 @@ TURNSTILE_SECRET_KEY = os.getenv('TURNSTILE_SECRET_KEY', '1x00000000000000000000
 SESSION_DURATION_HOURS = 8
 SESSION_COOKIE_NAME    = 'miot_sid'
 IS_PRODUCTION = os.getenv('RENDER', '') != '' or os.getenv('FLASK_ENV', '') == 'production'
+MAX_FAILED_ATTEMPTS = int(os.getenv('MAX_FAILED_ATTEMPTS', 5))
+LOCKOUT_MINUTES = int(os.getenv('LOCKOUT_MINUTES', 15))
 
 # Configuración de 2FA y Resend
 RESEND_API_KEY      = os.getenv('RESEND_API_KEY', 're_tu_key_aqui')
@@ -91,7 +93,11 @@ SENSORS = [
 
 # ==================== FLASK APP ====================
 
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    static_folder=str(BASE_DIR / 'static'),
+    template_folder=str(BASE_DIR / 'templates')
+)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
@@ -1523,35 +1529,35 @@ def verify_turnstile_token(token: str, remote_ip: str = None) -> bool:
 @app.route('/')
 @app.route('/index.html')
 def index():
-    return send_file('index.html')
+    return send_file(BASE_DIR / 'templates' / 'index.html')
 
 @app.route('/report.html')
 def report_page():
-    return send_file('report.html')
+    return send_file(BASE_DIR / 'templates' / 'report.html')
 
 @app.route('/login.html')
 def login_page():
-    return send_file('login.html')
+    return send_file(BASE_DIR / 'templates' / 'login.html')
 
 @app.route('/admin.html')
 def admin_page():
-    return send_file('admin.html')
+    return send_file(BASE_DIR / 'templates' / 'admin.html')
 
 @app.route('/css/<path:filename>')
 def serve_css(filename):
-    return send_from_directory('css', filename)
+    return send_from_directory(BASE_DIR / 'static' / 'css', filename)
 
 @app.route('/js/<path:filename>')
 def serve_js(filename):
-    return send_from_directory('js', filename)
+    return send_from_directory(BASE_DIR / 'static' / 'js', filename)
 
 @app.route('/images/<path:filename>')
 def serve_images(filename):
-    return send_from_directory('images', filename)
+    return send_from_directory(BASE_DIR / 'static' / 'images', filename)
 
 @app.route('/sw.js')
 def serve_sw():
-    response = send_file('sw.js')
+    response = send_file(BASE_DIR / 'static' / 'sw.js')
     response.headers['Content-Type'] = 'application/javascript'
     response.headers['Service-Worker-Allowed'] = '/'
     return response
@@ -1739,7 +1745,7 @@ def api_logout():
 
 @app.route('/manifest.json')
 def serve_manifest():
-    return send_file('manifest.json', mimetype='application/manifest+json')
+    return send_file(BASE_DIR / 'static' / 'manifest.json', mimetype='application/manifest+json')
 
 @app.route('/generate-report', methods=['POST'])
 def handle_generate_report():
@@ -1925,6 +1931,10 @@ def get_vapid_public_key():
         return jsonify({"error": "VAPID keys not configured"}), 500
     return jsonify({"publicKey": VAPID_PUBLIC_KEY})
 
+@app.route('/vapid-public-key', methods=['GET'])
+def handle_vapid_public_key():
+    return get_vapid_public_key()
+
 @app.route('/push-subscribe', methods=['POST'])
 def push_subscribe():
     subscription = request.get_json()
@@ -1952,8 +1962,8 @@ def push_test():
     payload = json.dumps({
         "title": "Notificacion de Prueba",
         "body": "Las notificaciones push estan funcionando correctamente!",
-        "icon": "/images/logo_noti.png",
-        "badge": "/images/icon.png",
+        "icon": "/static/images/logo_noti.png",
+        "badge": "/static/images/icon.png",
         "tag": "test-notification",
         "data": {"url": "/", "type": "test"}
     })
@@ -1969,8 +1979,8 @@ def push_seismic_alert():
     payload = json.dumps({
         "title": "ALERTA SISMICA",
         "body": f"Vibración detectada: {magnitude:.3f} g\nRevise condiciones en el área.",
-        "icon": "/images/alert_noti.png",
-        "badge": "/images/icon.png",
+        "icon": "/static/images/alert_noti.png",
+        "badge": "/static/images/icon.png",
         "tag": "seismic-alert",
         "requireInteraction": True,
         "data": {"url": "/", "type": "seismic"}
@@ -2026,8 +2036,8 @@ def send_daily_report_notification():
     payload = json.dumps({
         "title": "Reporte Meteorologico Diario",
         "body": f"Temp: {temp_str}C | Humedad: {hum_str}%\nCondicion: {condition}",
-        "icon": "/images/logo_noti.png",
-        "badge": "/images/icon.png",
+        "icon": "/static/images/logo_noti.png",
+        "badge": "/static/images/icon.png",
         "tag": "daily-report",
         "data": {"url": "/report.html", "type": "report"}
     })
