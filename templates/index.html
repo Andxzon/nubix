@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/png" href="/static/images/icon.png">
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#16213e">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="MeteoIoT">
+    <link rel="apple-touch-icon" href="/static/images/icon.png">
+    <title>Estacion Meteorológica</title>
+    <!-- Socket.IO para comunicación en tiempo real -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <!-- Chart.js y adaptador de fechas -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script> <!--graficAS-->
+    <script
+        src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <!--fechas-->
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="/static/js/auth_guard.js"></script>
+</head>
+
+<body>
+    <main class="wrap">
+        <header class="header">
+            <div class="header-titles">
+                <h1>Dashboard — Sensores (ventana: 10 min)</h1>
+                <p class="sub">Temperatura · Presión · Humedad · Humedad de suelo · Luz · Vibración</p>
+            </div>
+            <div class="report-actions">
+                <button id="generate-new-report-btn" class="icon-button" title="Generar Nuevo Reporte"
+                    style="display: none;">
+                    <img src="/static/images/reload_reports.png" alt="Generar">
+                    <span class="button-label">Nuevo Reporte</span>
+                </button>
+                <a href="report.html" class="icon-button" title="Ver Reportes">
+                    <img src="/static/images/reports_icon.png" alt="Ver">
+                    <span class="button-label">Ver Reportes</span>
+                </a>
+                <button id="subscribe-btn" class="report-button">Suscribirse</button>
+                <button onclick="window.location.href='admin.html'" id="admin-btn" class="icon-button"
+                    style="display: none;">
+                    <img src="/static/images/admin-c.png" alt="Admin">
+                    <span class="button-label">Panel Admin</span>
+                </button>
+                <button onclick="logout()" class="icon-button">
+                    <img src="/static/images/log-out.png" alt="Salir">
+                    <span class="button-label">Cerrar Sesión</span>
+                </button>
+            </div>
+            <div id="report-loader" class="loader" style="display: none;"></div>
+            <div id="report-error" class="error-message" style="display: none;"></div>
+        </header>
+
+        <section class="grid-charts">
+            <div class="card"><canvas id="tempChart"></canvas></div>
+            <div class="card"><canvas id="presChart"></canvas></div>
+            <div class="card"><canvas id="humChart"></canvas></div>
+            <div class="card"><canvas id="soilChart"></canvas></div>
+            <div class="card"><canvas id="lightChart"></canvas></div>
+            <div class="card"><canvas id="vibrChart"></canvas></div>
+        </section>
+
+        <footer class="footer">Derechos reservados ©</footer>
+    </main>
+
+    <script src="/static/js/config.js"></script>
+    <script src="/static/js/script.js"></script>
+    <script src="/static/js/admin.js"></script>
+</body>
+
+</html>

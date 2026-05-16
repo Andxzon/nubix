@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/png" href="/static/images/icon.png">
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#16213e">
+    <title>Iniciar Sesión - MeteoIoT</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- Cloudflare Turnstile -->
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+</head>
+
+<body>
+    <div class="login-wrapper">
+        <main class="login-card">
+            <img src="/static/images/logo_noti.png" alt="MeteoIoT Logo" class="login-logo" onerror="this.src='/static/images/icon.png'">
+
+            <h1 class="login-title">Bienvenido</h1>
+
+            <form class="login-form">
+                <!-- Sección de Credenciales (Paso 1) -->
+                <div id="credentials-section">
+                    <div class="input-group">
+                        <input type="text" id="username" placeholder="Usuario" class="login-input" required>
+                    </div>
+
+                    <div class="input-group">
+                        <input type="password" id="password" placeholder="Contraseña" class="login-input" required>
+                    </div>
+
+                    <!-- Widget de Cloudflare Turnstile -->
+                    <div class="cf-turnstile" 
+                         data-sitekey="0x4AAAAAACqAKDmtesf1K9sl"
+                         data-theme="dark"
+                         data-language="es"
+                         data-callback="onTurnstileVerified"
+                         data-expired-callback="onTurnstileExpired"
+                         data-error-callback="onTurnstileError"
+                         id="cf-turnstile-widget"></div>
+
+                    <button type="submit" class="login-btn" id="login-submit-btn" disabled>Acceder</button>
+                </div>
+
+                <!-- Sección de 2FA (Paso 2) -->
+                <div id="2fa-section" style="display: none;">
+                    <p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 20px;">
+                        Hemos enviado un código a <span id="masked-email" style="color: #60a5fa; font-weight: 600;"></span>. 
+                        Por favor, introdúcelo para continuar.
+                    </p>
+                    <div class="input-group">
+                        <input type="text" id="2fa-code" placeholder="Código de 6 dígitos" class="login-input" maxlength="6" inputmode="numeric" style="text-align: center; font-size: 1.5rem; letter-spacing: 5px;">
+                    </div>
+                    <button type="button" class="login-btn" id="verify-2fa-btn">Verificar Código</button>
+                    <p style="margin-top: 15px;">
+                        <a href="login.html" style="color: var(--muted); font-size: 0.8rem; text-decoration: none;">← Volver atrás</a>
+                    </p>
+                </div>
+            </form>
+
+            <div class="login-extra-links">
+                <a href="#" class="forgot-password">¿Olvidaste tu contraseña?</a>
+            </div>
+        </main>
+    </div>
+    <script src="/static/js/login.js"></script>
+</body>
+
+</html>

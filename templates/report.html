@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="/static/images/icon.png">
+    <title>Informes de los Últimos 7 Días</title>
+    <!-- El archivo auth_guard.js maneja la seguridad mediante cookies HttpOnly -->
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js" charset="utf-8"></script>
+    <script src="/static/js/auth_guard.js" defer></script>
+</head>
+
+<body>
+    <main class="wrap">
+        <header class="header">
+            <div class="header-titles">
+                <h1>Resultados del Análisis Crítico</h1>
+            </div>
+            <div class="report-actions">
+                <select id="date-range" class="report-button" style="display: none;">
+                    <option value="7">Últimos 7 días</option>
+                    <option value="15">Últimos 15 días</option>
+                    <option value="30">Últimos 30 días</option>
+                    <option value="all">Todos</option>
+                </select>
+                <a href="/" class="report-button">Volver al Dashboard</a>
+                <button onclick="logout()" class="icon-button">
+                    <img src="/static/images/log-out.png" alt="Salir">
+                    <span class="button-label">Cerrar Sesión</span>
+                </button>
+            </div>
+        </header>
+        <section id="reports-container" class="report-content-area">
+            <!-- Los informes se cargarán aquí dinámicamente -->
+        </section>
+        <footer class="footer">Derechos reservados ©</footer>
+    </main>
+    <script src="/static/js/config.js"></script>
+    <script src="/static/js/report.js"></script>
+</body>
+
+</html>
